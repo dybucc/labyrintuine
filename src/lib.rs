@@ -1,5 +1,9 @@
 //! This module contains the main application logic for the game.
 
+// TODO change the draw function to be fallible and make some of the functions that draw fallible as
+// well so that they don't use expect but instead return a result color_eyre type and errors cascade
+// back up
+
 #![expect(
     clippy::cargo_common_metadata,
     reason = "Temporary allow during development."
@@ -14,7 +18,10 @@ use ratatui::{
     style::{Color, Style},
     symbols::DOT,
     text::Line,
-    widgets::{Block, BorderType, Clear},
+    widgets::{
+        canvas::{Canvas, Points},
+        Block, BorderType, Clear,
+    },
     DefaultTerminal, Frame,
 };
 
@@ -22,7 +29,7 @@ use ratatui::{
 /// Ratatui will render the game and Crossterm events will help writing to.
 pub struct App {
     /// This field indicates whether the application should exit. It is set to `true` when the user
-    /// wants to quit the game but it starts `false`.
+    /// wants to quit the game but it starts off `false`.
     exit: bool,
     /// This field holds the current screen of the game. It is used to determine which screen to
     /// render and what actions to take based on user input.
@@ -38,8 +45,8 @@ pub struct App {
     /// This field holds the map that is currently selected in the viewport by the user cursor. This
     /// means the currently selected model in the maps menu.
     viewport_map: Option<Map>,
-    /// This field holds the offset by which to scroll the sliding window into the [`maps`] vector
-    /// in the maps menu's viewport.
+    /// This field holds the offset by which to scroll the sliding window into the
+    /// [`maps`](App::maps) vector in the maps menu's viewport.
     viewport_offset: usize,
     /// This field holds the height of the area in which the list of maps are being rendered as a
     /// measure of terminal cells during the last redraw of the on-screen frame.
@@ -70,9 +77,8 @@ impl App {
     }
 
     /// This function runs the main loop of the application. It handles user input and updates the
-    /// application state. The loop continues until the [`struct@App::field@exit`] field is set to
-    /// `true`, after which the function returns to the call site and ratatui restores the state of
-    /// the terminal.
+    /// application state. The loop continues until the exit condtion is `true`, after which the
+    /// function returns to the call site.
     ///
     /// # Errors
     ///
@@ -92,7 +98,7 @@ impl App {
         match &self.screen {
             Screen::MainMenu(item) => Self::main_menu(frame, *item),
             Screen::OptionsMenu(item) => Self::options_menu(frame, *item),
-            Screen::InGame => todo!(),
+            Screen::InGame => self.in_game(frame),
             Screen::MapMenu => self.map_menu(frame),
         }
     }
@@ -325,6 +331,132 @@ impl App {
             frame.render_widget(selector, inner_selector[idx]);
             frame.render_widget(entry, inner_list[idx]);
         }
+    }
+
+    /// This function renders the in-game screen. This consists of rendering a looping animation of
+    /// the currently selected labyrinth being solved.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "The collection is created in-place with few, known elements; there is no risk of bad indexing."
+    )]
+    fn in_game(&self, frame: &mut Frame) {
+        Self::clear(frame);
+
+        let maze_rows = self.map.data.len();
+        let maze_columns = self
+            .map
+            .data
+            .first()
+            .expect("failed to retrieve maze in selected map")
+            .len();
+
+        let space = Layout::vertical([
+            Constraint::Min(1),
+            Constraint::Length(
+                maze_rows
+                    .try_into()
+                    .expect("failed to convert maze_rows to u16"),
+            ),
+            Constraint::Min(1),
+        ])
+        .split(frame.area())[1];
+        let space = Layout::horizontal([
+            Constraint::Min(1),
+            Constraint::Length(
+                maze_columns
+                    .try_into()
+                    .expect("failed to convert maze_columns to u16"),
+            ),
+            Constraint::Min(1),
+        ])
+        .split(space)[1];
+
+        let maze = Canvas::default()
+            .x_bounds([
+                (-rounded_div::i32(space.width.into(), 2)).into(),
+                (rounded_div::i32(space.width.into(), 2)).into(),
+            ])
+            .y_bounds([
+                (-rounded_div::i32(space.height.into(), 2)).into(),
+                (rounded_div::i32(space.height.into(), 2)).into(),
+            ])
+            .paint(|ctx| {
+                let mut output = Vec::new();
+
+                ctx.draw(&Points {
+                    coords: {
+                        // The formula to create evenly distributed coordinates around the origin is
+                        // coordinate[i] = (n - 1) / 2 - i in ascending order
+                        // coordinate[i] = i - (n - 1) / 2 in descending order
+
+                        // Rows computation.
+                        let mut rows = Vec::new();
+                        let n = f64::from(
+                            u16::try_from(self.map.data.len()).expect("failed to convert rows"),
+                        );
+                        for (idx, row) in self.map.data.iter().enumerate() {
+                            if row.contains('2') {
+                                let idx =
+                                    f64::from(u16::try_from(idx).expect("failed to convert rows"));
+                                rows.push((n - 1.) / 2. - idx);
+                            }
+                        }
+
+                        // Columns computation.
+                        let mut cols = Vec::new();
+                        let n = f64::from(
+                            u16::try_from(
+                                self.map
+                                    .data
+                                    .first()
+                                    .expect("failed to retrieve first element of selected map")
+                                    .len(),
+                            )
+                            .expect("failed to convert rows"),
+                        );
+                        for row in &self.map.data {
+                            let mut inner = Vec::new();
+                            for (idx, col) in row.bytes().enumerate() {
+                                if col == b'2' {
+                                    let idx = f64::from(
+                                        u16::try_from(idx).expect("failed to convert rows"),
+                                    );
+                                    inner.push(idx - (n - 1.) / 2.);
+                                }
+                            }
+                            cols.push(inner);
+                        }
+
+                        for (idx, row) in rows.iter().enumerate() {
+                            for col in &cols[idx] {
+                                output.push((*col, *row));
+                            }
+                        }
+
+                        &output
+                    },
+                    color: Color::Green,
+                });
+            });
+        // let solution = Canvas::default()
+        //     .x_bounds([
+        //         (-(i32::from(space.width) / 2)).into(),
+        //         (space.width / 2).into(),
+        //     ])
+        //     .y_bounds([
+        //         (-(i32::from(space.height).div_euclid(2))).into(),
+        //         (i32::from(space.height) / 2).into(),
+        //     ])
+        //     .marker(Marker::Dot)
+        //     .paint(|ctx| {
+        //         ctx.draw(&Points {
+        //             coords: &[(0., 0.), (1., 0.), (-1., 0.)],
+        //             color: Color::Green,
+        //         });
+        //     });
+
+        frame.render_widget(maze, space);
+        // frame.render_widget(solution, space);
     }
 
     /// This function handles scanning for files in the directory in which the binary was executed

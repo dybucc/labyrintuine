@@ -4,6 +4,10 @@
     clippy::cargo_common_metadata,
     reason = "Temporary allow during development."
 )]
+#![expect(
+    unused_crate_dependencies,
+    reason = "The dependencies are used in the library crate."
+)]
 
 use color_eyre::{eyre::Result, install};
 use labyrintuine::App;

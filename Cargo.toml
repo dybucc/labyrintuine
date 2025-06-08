@@ -210,3 +210,4 @@ zero_sized_map_values = "deny"
 [dependencies]
 color-eyre = "0.6.5"
 ratatui = "0.29.0"
+rounded-div = "0.1.3"
