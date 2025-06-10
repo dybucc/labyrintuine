@@ -3,20 +3,33 @@
 // TODO change the draw function to be fallible and make some of the functions that draw fallible as
 // well so that they don't use expect but instead return a result color_eyre type and errors cascade
 // back up
+// TODO change the file parsing function to accept mazes that are walled (i.e. are surrounded by 2s)
+// and disallow mazes that aren't surrounded by 2s except for the exit points (4s can be on the
+// edges)
+// TODO change the in_game function to reuse the maze_cols and maze_rows variables when computing
+// the rows_n and cols_n variables in the solution canvas paint closure
+// TODO change the in_game function to get rid of the all_paths variable if it really isn't used
+// TODO modularize the code in the entire library
 
 #![expect(
     clippy::cargo_common_metadata,
     reason = "Temporary allow during development."
 )]
 
-use std::{ffi::OsString, fs, rc::Rc, sync::LazyLock, time::Duration};
+use std::{
+    ffi::OsString,
+    fs,
+    rc::Rc,
+    sync::LazyLock,
+    time::{Duration, Instant},
+};
 
 use color_eyre::eyre::{OptionExt as _, Result};
 use ratatui::{
     crossterm::event::{self, Event, KeyCode},
     layout::{Alignment, Constraint, Flex, Layout, Rect},
     style::{Color, Style},
-    symbols::DOT,
+    symbols::{Marker, DOT},
     text::Line,
     widgets::{
         canvas::{Canvas, Points},
@@ -25,32 +38,95 @@ use ratatui::{
     DefaultTerminal, Frame,
 };
 
-/// This structure holds the state of the application, which is to say the the structure from which
+/// Animation frame delay in milliseconds.
+///
+/// This constant controls the timing between animation frames in the pathfinding visualization.
+/// A lower value results in faster animation, while a higher value slows down the animation
+/// to make it easier to follow the algorithm's progress.
+const ANIMATION_FRAME_DELAY_MS: u64 = 200;
+
+/// Animation step types for pathfinding visualization.
+///
+/// This enumeration represents the different types of steps that can occur during the animated
+/// pathfinding visualization, allowing for proper rendering of both forward exploration and
+/// backtracking behavior.
+#[derive(Debug, Clone)]
+enum AnimationStep {
+    /// Add a coordinate to the current path visualization.
+    ///
+    /// This variant represents moving forward in the pathfinding algorithm by adding a new
+    /// coordinate to the currently displayed path.
+    Add(usize, usize),
+    /// Remove a coordinate from the current path visualization.
+    ///
+    /// This variant represents backtracking in the pathfinding algorithm by removing a coordinate
+    /// from the currently displayed path.
+    Remove(usize, usize),
+}
+
+/// Application state container for the labyrinth game.
+///
+/// This structure holds the state of the application, which is to say the structure from which
 /// Ratatui will render the game and Crossterm events will help writing to.
 pub struct App {
+    /// Application exit flag.
+    ///
     /// This field indicates whether the application should exit. It is set to `true` when the user
     /// wants to quit the game but it starts off `false`.
     exit: bool,
+    /// Current screen being displayed to the user.
+    ///
     /// This field holds the current screen of the game. It is used to determine which screen to
     /// render and what actions to take based on user input.
     screen: Screen,
+    /// Currently active labyrinth map.
+    ///
     /// This field holds the current map of the game. It is used to render the labyrinth and solve
     /// it. The custom type always holds a map, either the default one or one loaded and selected by
     /// the user.
     map: Map,
+    /// Collection of all available labyrinth maps.
+    ///
     /// This field holds information about all the labyrinth maps in the current working directory.
     /// It consists of a key extracted straight from the filesystem and a vector with the contents
     /// of the map as string-rows, stored as custom types within an ordered collection.
     maps: Vec<Map>,
+    /// Map currently selected in the viewport.
+    ///
     /// This field holds the map that is currently selected in the viewport by the user cursor. This
     /// means the currently selected model in the maps menu.
     viewport_map: Option<Map>,
+    /// Scrolling offset for the map list viewport.
+    ///
     /// This field holds the offset by which to scroll the sliding window into the
     /// [`maps`](App::maps) vector in the maps menu's viewport.
     viewport_offset: usize,
+    /// Height of the map list rendering area.
+    ///
     /// This field holds the height of the area in which the list of maps are being rendered as a
     /// measure of terminal cells during the last redraw of the on-screen frame.
     viewport_height: usize,
+    /// Animation steps recorded during pathfinding.
+    ///
+    /// This field stores a sequence of animation steps that represent the pathfinding algorithm's
+    /// traversal process, including forward moves and backtracking. Each step contains the
+    /// coordinates to be drawn or removed from the visualization.
+    animation_steps: Vec<AnimationStep>,
+    /// Current step in the animation sequence.
+    ///
+    /// This field tracks the current position in the [`animation_steps`](App::animation_steps)
+    /// vector to determine which steps have been rendered and which are still pending.
+    animation_index: usize,
+    /// Timestamp of the last animation frame update.
+    ///
+    /// This field stores the time when the animation was last updated, used to control the timing
+    /// between animation frames for smooth visualization.
+    last_animation_time: Instant,
+    /// Current set of coordinates being displayed in the animation.
+    ///
+    /// This field maintains the currently visible path coordinates during animation, allowing for
+    /// proper backtracking visualization by removing coordinates when needed.
+    current_animation_path: Vec<(usize, usize)>,
 }
 
 impl Default for App {
@@ -60,10 +136,11 @@ impl Default for App {
 }
 
 impl App {
-    /// This function creates a new instance of the [`App`] structure with safe defaults. A
-    /// [`Default`] trait implementation is not used here because the struct may perform a fallible
-    /// operation in the future. The [`Default`] trait implementation does use this function,
-    /// though.
+    /// Creates a new instance of the App structure with safe defaults.
+    ///
+    /// A [`Default`] trait implementation is not used here because the struct may perform a
+    /// fallible operation in the future. The [`Default`] trait implementation does use this
+    /// function, though.
     fn new() -> Self {
         Self {
             exit: false,
@@ -73,12 +150,17 @@ impl App {
             viewport_map: None,
             viewport_offset: 0,
             viewport_height: 0,
+            animation_steps: Vec::new(),
+            animation_index: 0,
+            last_animation_time: Instant::now(),
+            current_animation_path: Vec::new(),
         }
     }
 
-    /// This function runs the main loop of the application. It handles user input and updates the
-    /// application state. The loop continues until the exit condtion is `true`, after which the
-    /// function returns to the call site.
+    /// Runs the main loop of the application.
+    ///
+    /// This function handles user input and updates the application state. The loop continues until
+    /// the exit condition is `true`, after which the function returns to the call site.
     ///
     /// # Errors
     ///
@@ -92,8 +174,10 @@ impl App {
         Ok(())
     }
 
-    /// This function updates the application UI based on the persistent state stored in the [`App`]
-    /// structure.
+    /// Updates the application UI based on the persistent state.
+    ///
+    /// This function renders different screens based on the current state stored in the [`App`]
+    /// structure, dispatching to the appropriate rendering function for each screen type.
     fn draw(&mut self, frame: &mut Frame) {
         match &self.screen {
             Screen::MainMenu(item) => Self::main_menu(frame, *item),
@@ -103,7 +187,10 @@ impl App {
         }
     }
 
-    /// This function handles input events and updates the application state accordingly.
+    /// Handles input events and updates the application state accordingly.
+    ///
+    /// This function polls for keyboard events and dispatches them to the appropriate handler
+    /// functions based on the key pressed. It uses a timeout to avoid blocking the UI.
     fn handle_events(&mut self) -> Result<()> {
         if event::poll(Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
@@ -118,19 +205,28 @@ impl App {
             }
         }
 
+        // Update animation if in-game
+        if matches!(self.screen, Screen::InGame) {
+            self.update_animation();
+        }
+
         Ok(())
     }
 
-    /// This function clears the terminal screen by rendering a clear widget over the entire area
-    /// of the frame.
+    /// Clears the terminal screen by rendering a [`Clear`] widget.
+    ///
+    /// This function renders a clear widget over the entire area of the frame to prepare for
+    /// rendering new content without artifacts from previous buffers rendered on the same frame.
     fn clear(frame: &mut Frame) {
         let clear = Clear;
         frame.render_widget(clear, frame.area());
     }
 
-    /// This function renders the generic part of the main and options menu. This generic part here
-    /// means the layout and block in which the menu gets rendered. Because each menu does contains
-    /// different entires, this part is non-generic and is made generic through a type [`MenuType`].
+    /// Renders the generic layout structure for the main and options menus.
+    ///
+    /// This function creates the common layout and block structure used by both main and options
+    /// menus. The generic part includes the centered positioning and border styling, while the
+    /// specific menu content is handled by the caller using the [`MenuType`] parameter.
     #[expect(
         clippy::indexing_slicing,
         reason = "The collection is created in-place with few, known elements; there is no risk of bad indexing."
@@ -167,7 +263,11 @@ impl App {
         Layout::vertical(vec![Constraint::Max(1); menu.value() as usize]).split(inner_space)
     }
 
-    /// This function handles rendering on-creen contents in the main menu.
+    /// Renders the main menu screen with navigation options.
+    ///
+    /// This function displays the main menu with options for "Start Game", "Options", and "Quit".
+    /// It highlights the currently selected option and provides visual feedback for user
+    /// navigation.
     #[expect(
         clippy::indexing_slicing,
         reason = "The collection is created in-place with few, known elements; there is no risk of bad indexing."
@@ -210,7 +310,10 @@ impl App {
         frame.render_widget(opt3, inner_layout[2]);
     }
 
-    /// This function handles rendering on-creen contents in the options menu.
+    /// Renders the options menu screen with configuration choices.
+    ///
+    /// This function displays the options menu with choices for "Map" selection and "Return" to the
+    /// main menu. It provides the same navigation highlighting as the main menu.
     #[expect(
         clippy::indexing_slicing,
         reason = "The collection is created in-place with few, known elements; there is no risk of bad indexing."
@@ -244,8 +347,11 @@ impl App {
         frame.render_widget(opt2, inner_layout[1]);
     }
 
-    /// This function handles rendering on-creen contents in the map menu. This entails rendering a
-    /// hover viewport of the list of maps loaded from the current directory.
+    /// Renders the map selection menu with scrollable list of available maps.
+    ///
+    /// This function displays a viewport containing all loadable maze maps from the current
+    /// directory. It provides scrolling functionality and visual indicators for the currently
+    /// selected map and the map that's actively being used.
     #[expect(
         clippy::indexing_slicing,
         reason = "The collection is created in-place with few, known elements; there is no risk of bad indexing."
@@ -333,14 +439,82 @@ impl App {
         }
     }
 
-    /// This function renders the in-game screen. This consists of rendering a looping animation of
-    /// the currently selected labyrinth being solved.
+    /// Transforms maze coordinates to screen coordinates for canvas rendering.
+    ///
+    /// This function converts maze coordinates (col, row) to screen coordinates (x, y) using the
+    /// standard transformation formulas: coordinate[i] = (n - 1) / 2 - i for rows (ascending order)
+    /// and coordinate[i] = i - (n - 1) / 2 for columns (descending order).
+    fn transform_maze_to_screen_coords(&self, maze_coords: &[(usize, usize)]) -> Vec<(f64, f64)> {
+        let rows_n = f64::from(u16::try_from(self.map.data.len()).expect("failed to convert rows"));
+        let cols_n = f64::from(
+            u16::try_from(
+                self.map
+                    .data
+                    .first()
+                    .expect("failed to retrieve first element of selected map")
+                    .len(),
+            )
+            .expect("failed to convert columns"),
+        );
+
+        maze_coords
+            .iter()
+            .map(|&(col, row)| {
+                // Row transformation: coordinate[i] = (n - 1) / 2 - i
+                let screen_y = (rows_n - 1.) / 2.
+                    - f64::from(u16::try_from(row).expect("failed to convert row to u16"));
+
+                // Column transformation: coordinate[i] = i - (n - 1) / 2
+                let screen_x = f64::from(u16::try_from(col).expect("failed to convert col to u16"))
+                    - (cols_n - 1.) / 2.;
+
+                (screen_x, screen_y)
+            })
+            .collect()
+    }
+
+    /// Renders the in-game screen with maze visualization and pathfinding solution.
+    ///
+    /// This function displays the currently selected labyrinth and runs the pathfinding algorithm
+    /// to show the solution. It renders both the maze walls and the computed paths using [`Canvas`]
+    /// widgets for precise coordinate-based drawing.
     #[expect(
         clippy::indexing_slicing,
         reason = "The collection is created in-place with few, known elements; there is no risk of bad indexing."
     )]
-    fn in_game(&self, frame: &mut Frame) {
+    fn in_game(&mut self, frame: &mut Frame) {
         Self::clear(frame);
+
+        // Initialize animation steps if not already done
+        if self.animation_steps.is_empty() {
+            // Find the maze entry point (marked with '1')
+            let entry_point = self
+                .map
+                .data
+                .iter()
+                .enumerate()
+                .find_map(|(row, line)| {
+                    line.bytes()
+                        .enumerate()
+                        .find_map(|(col, char)| (char == b'1').then_some((col, row)))
+                })
+                .expect("failed to retrieve entry point in map");
+
+            // Record animation steps
+            let mut initial_path = Vec::new();
+            let mut all_paths = Vec::new();
+            Self::record_animation_steps(
+                &self.map.data,
+                entry_point,
+                &mut initial_path,
+                &mut all_paths,
+                &mut self.animation_steps,
+            );
+
+            self.animation_index = 0;
+            self.current_animation_path.clear();
+            self.last_animation_time = Instant::now();
+        }
 
         let maze_rows = self.map.data.len();
         let maze_columns = self
@@ -380,87 +554,138 @@ impl App {
                 (-rounded_div::i32(space.height.into(), 2)).into(),
                 (rounded_div::i32(space.height.into(), 2)).into(),
             ])
+            .marker(Marker::Dot)
             .paint(|ctx| {
-                let mut output = Vec::new();
+                // Collect all maze wall coordinates
+                let mut wall_coords = Vec::new();
 
+                for (row_idx, row) in self.map.data.iter().enumerate() {
+                    for (col_idx, cell) in row.bytes().enumerate() {
+                        if cell == b'2' {
+                            wall_coords.push((col_idx, row_idx));
+                        }
+                    }
+                }
+
+                // Transform to screen coordinates and render
+                let screen_coords = self.transform_maze_to_screen_coords(&wall_coords);
                 ctx.draw(&Points {
-                    coords: {
-                        // The formula to create evenly distributed coordinates around the origin is
-                        // coordinate[i] = (n - 1) / 2 - i in ascending order
-                        // coordinate[i] = i - (n - 1) / 2 in descending order
-
-                        // Rows computation.
-                        let mut rows = Vec::new();
-                        let n = f64::from(
-                            u16::try_from(self.map.data.len()).expect("failed to convert rows"),
-                        );
-                        for (idx, row) in self.map.data.iter().enumerate() {
-                            if row.contains('2') {
-                                let idx =
-                                    f64::from(u16::try_from(idx).expect("failed to convert rows"));
-                                rows.push((n - 1.) / 2. - idx);
-                            }
-                        }
-
-                        // Columns computation.
-                        let mut cols = Vec::new();
-                        let n = f64::from(
-                            u16::try_from(
-                                self.map
-                                    .data
-                                    .first()
-                                    .expect("failed to retrieve first element of selected map")
-                                    .len(),
-                            )
-                            .expect("failed to convert rows"),
-                        );
-                        for row in &self.map.data {
-                            let mut inner = Vec::new();
-                            for (idx, col) in row.bytes().enumerate() {
-                                if col == b'2' {
-                                    let idx = f64::from(
-                                        u16::try_from(idx).expect("failed to convert rows"),
-                                    );
-                                    inner.push(idx - (n - 1.) / 2.);
-                                }
-                            }
-                            cols.push(inner);
-                        }
-
-                        for (idx, row) in rows.iter().enumerate() {
-                            for col in &cols[idx] {
-                                output.push((*col, *row));
-                            }
-                        }
-
-                        &output
-                    },
+                    coords: &screen_coords,
                     color: Color::Green,
                 });
             });
-        // let solution = Canvas::default()
-        //     .x_bounds([
-        //         (-(i32::from(space.width) / 2)).into(),
-        //         (space.width / 2).into(),
-        //     ])
-        //     .y_bounds([
-        //         (-(i32::from(space.height).div_euclid(2))).into(),
-        //         (i32::from(space.height) / 2).into(),
-        //     ])
-        //     .marker(Marker::Dot)
-        //     .paint(|ctx| {
-        //         ctx.draw(&Points {
-        //             coords: &[(0., 0.), (1., 0.), (-1., 0.)],
-        //             color: Color::Green,
-        //         });
-        //     });
+        let solution = Canvas::default()
+            .x_bounds([
+                (-rounded_div::i32(space.width.into(), 2)).into(),
+                (rounded_div::i32(space.width.into(), 2)).into(),
+            ])
+            .y_bounds([
+                (-rounded_div::i32(space.height.into(), 2)).into(),
+                (rounded_div::i32(space.height.into(), 2)).into(),
+            ])
+            .marker(Marker::Dot)
+            .paint(|ctx| {
+                // Transform current animation path coordinates to screen coordinates for rendering
+                let screen_coordinates =
+                    self.transform_maze_to_screen_coords(&self.current_animation_path);
+
+                // Draw current animation path points
+                ctx.draw(&Points {
+                    coords: &screen_coordinates,
+                    color: Color::Red,
+                });
+            });
 
         frame.render_widget(maze, space);
-        // frame.render_widget(solution, space);
+        frame.render_widget(solution, space);
     }
 
-    /// This function handles scanning for files in the directory in which the binary was executed
-    /// and checks if there are any .labmap files to read in labyrinth maps for the game.
+    /// Records animation steps during pathfinding for later visualization.
+    ///
+    /// This method performs depth-first search to explore the maze and records each step of the
+    /// algorithm (forward moves and backtracking) for animated playback. It captures the exact
+    /// sequence of the pathfinding algorithm's exploration while finding all possible paths from
+    /// the entry point to exits or dead ends.
+    fn record_animation_steps(
+        map_data: &[String],
+        start: (usize, usize),
+        current_path: &mut Vec<(usize, usize)>,
+        all_paths: &mut Vec<Vec<(usize, usize)>>,
+        animation_steps: &mut Vec<AnimationStep>,
+    ) {
+        // Record adding current position to path
+        current_path.push(start);
+        animation_steps.push(AnimationStep::Add(start.0, start.1));
+
+        // Check if we've reached an exit point ('4')
+        if let Some(row) = map_data.get(start.1) {
+            if let Some(cell) = row.as_bytes().get(start.0) {
+                if *cell == b'4' {
+                    // Found exit - save complete path
+                    all_paths.push(current_path.clone());
+                    // Record removing position during backtrack
+                    let _ = current_path.pop();
+                    animation_steps.push(AnimationStep::Remove(start.0, start.1));
+                    return;
+                }
+            }
+        }
+
+        // Explore all four directions (north, south, east, west)
+        let directions = [(0_i32, -1_i32), (0, 1), (1, 0), (-1, 0)];
+
+        let mut found_next_move = false;
+
+        for (dx, dy) in directions {
+            // Calculate neighbor coordinates with proper bounds checking
+            let Some(new_x) = start.0.checked_add_signed(dx as isize) else {
+                continue;
+            };
+            let Some(new_y) = start.1.checked_add_signed(dy as isize) else {
+                continue;
+            };
+
+            let new_pos = (new_x, new_y);
+
+            // Skip if already visited in current path
+            if current_path.contains(&new_pos) {
+                continue;
+            }
+
+            // Check if position is valid and walkable
+            if let Some(row) = map_data.get(new_pos.1) {
+                if let Some(cell) = row.chars().nth(new_pos.0) {
+                    // Only explore walkable cells ('3') or exit ('4')
+                    if matches!(cell, '3' | '4') {
+                        found_next_move = true;
+                        // Recursively explore from this position
+                        Self::record_animation_steps(
+                            map_data,
+                            new_pos,
+                            current_path,
+                            all_paths,
+                            animation_steps,
+                        );
+                    }
+                }
+            }
+        }
+
+        // If no valid moves found, this is a dead end - save path
+        if !found_next_move {
+            all_paths.push(current_path.clone());
+        }
+
+        // Record removing position during backtrack
+        let _ = current_path.pop();
+        animation_steps.push(AnimationStep::Remove(start.0, start.1));
+    }
+
+    /// Scans the current directory for .labmap files and loads them.
+    ///
+    /// This function searches for files with the .labmap extension in the current working
+    /// directory, validates their format, and adds them to the maps collection for user selection.
+    /// It skips invalid files and continues processing valid ones.
     fn fetch_files(&mut self) -> Result<()> {
         for file in fs::read_dir(".")? {
             match file {
@@ -486,9 +711,12 @@ impl App {
         Ok(())
     }
 
-    /// This function serves as a way to parse the contents of input files that have been deemed to
-    /// be apparently appropiate for processing by the program but whose contents have not yet been
-    /// confirmed to work with the format spec for labyrinths. This function makes that last check.
+    /// Validates the format and content of labyrinth map files.
+    ///
+    /// This function performs the final validation check on file contents that have been deemed
+    /// potentially valid. It ensures the maze format follows the specification: contains only valid
+    /// characters (1-4), has consistent row lengths, exactly one entry point, and properly
+    /// positioned exit points on the edges.
     fn parse_file_contents(input: &str) -> bool {
         let mut entry_point_counter = 0;
         let mut previous_line = "";
@@ -543,7 +771,11 @@ impl App {
         }
     }
 
-    /// This function handles events where the user input was a keypress on the 'j' key.
+    /// Handles 'j' key press events for downward navigation.
+    ///
+    /// This function processes the 'j' key press which is used for moving down in menus and lists.
+    /// The behavior varies depending on the current screen, handling menu navigation and viewport
+    /// scrolling appropriately.
     fn handle_j_events(&mut self) -> Result<()> {
         match self.screen {
             Screen::MainMenu(MainMenuItem::StartGame) => {
@@ -567,7 +799,7 @@ impl App {
                         .iter()
                         .skip(self.viewport_offset)
                         .take(self.viewport_height)
-                        .last()
+                        .next_back()
                         .ok_or_eyre("no last element in viewport maps")?
                         .clone()
                     && viewport_map
@@ -600,7 +832,11 @@ impl App {
         Ok(())
     }
 
-    /// This function handles events where the user input was a keypress on the 'k' key.
+    /// Handles 'k' key press events for upward navigation.
+    ///
+    /// This function processes the 'k' key press which is used for moving up in menus and lists.
+    /// Like the 'j' handler, behavior varies by screen and includes proper viewport management for
+    /// scrollable content.
     fn handle_k_events(&mut self) -> Result<()> {
         match self.screen {
             Screen::MainMenu(MainMenuItem::Quit) => {
@@ -656,7 +892,11 @@ impl App {
         Ok(())
     }
 
-    /// This function handles events where the user input was a keypress on the 'l' key.
+    /// Handles 'l' key press events for selection and forward navigation.
+    ///
+    /// This function processes the 'l' key press which is used for selecting menu items and moving
+    /// forward in the application flow. It handles screen transitions, map loading, and selection
+    /// confirmation across different contexts.
     fn handle_l_events(&mut self) -> Result<()> {
         match self.screen {
             Screen::MainMenu(MainMenuItem::StartGame) => {
@@ -693,63 +933,148 @@ impl App {
         Ok(())
     }
 
-    /// This function handles events where the user input was a keypress on the 'h' key.
+    /// Handles 'h' key press events for backward navigation.
+    ///
+    /// This function processes the 'h' key press which is used for moving back or returning to
+    /// previous screens. It handles returning from the in-game screen to the main menu and from the
+    /// map menu to the options menu.
     fn handle_h_events(&mut self) {
-        if matches!(self.screen, Screen::MapMenu) {
-            self.screen = Screen::OptionsMenu(OptionsMenuItem::Map);
+        match self.screen {
+            Screen::InGame => {
+                // Reset animation state and return to main menu
+                self.animation_steps.clear();
+                self.animation_index = 0;
+                self.current_animation_path.clear();
+                self.screen = Screen::MainMenu(MainMenuItem::StartGame);
+            }
+            Screen::MapMenu => {
+                self.screen = Screen::OptionsMenu(OptionsMenuItem::Map);
+            }
+            _ => {}
+        }
+    }
+
+    /// Updates the animation state based on timing and current progress.
+    ///
+    /// This method advances the animation by processing the next step in the animation sequence
+    /// when enough time has passed. It handles both adding and removing coordinates from the
+    /// current animation path to show the pathfinding exploration and backtracking.
+    fn update_animation(&mut self) {
+        // Check if enough time has passed for the next animation frame
+        if self.last_animation_time.elapsed() >= Duration::from_millis(ANIMATION_FRAME_DELAY_MS) {
+            self.last_animation_time = Instant::now();
+
+            if self.animation_index < self.animation_steps.len() {
+                // Process the next animation step
+                if let Some(step) = self.animation_steps.get(self.animation_index) {
+                    match step {
+                        AnimationStep::Add(x, y) => {
+                            self.current_animation_path.push((*x, *y));
+                        }
+                        AnimationStep::Remove(x, y) => {
+                            // Remove the coordinate from current path (backtracking)
+                            if let Some(pos) = self
+                                .current_animation_path
+                                .iter()
+                                .position(|&coord| coord == (*x, *y))
+                            {
+                                let _ = self.current_animation_path.remove(pos);
+                            }
+                        }
+                    }
+                }
+
+                self.animation_index += 1;
+            } else {
+                // Animation complete, restart from beginning
+                self.animation_index = 0;
+                self.current_animation_path.clear();
+            }
         }
     }
 }
 
+/// Enumeration of available application screens.
+///
 /// This enumeration holds information about the current screen of the game. This is used to
 /// determine which screen to render and what actions to take based on user input.
 enum Screen {
+    /// Main menu screen of the game.
+    ///
     /// This variant represents the main menu screen of the game.
     MainMenu(MainMenuItem),
+    /// Options configuration screen.
+    ///
     /// This variant represents the options menu screen of the game.
     OptionsMenu(OptionsMenuItem),
+    /// In-game maze visualization screen.
+    ///
     /// This variant represents the ingame screen where the labyrinth is displayed and solved.
     InGame,
+    /// Map selection screen.
+    ///
     /// This variant represents the map menu screen of the game. It contains a list of the maps
     /// available to the user.
     MapMenu,
 }
 
-/// This enumeration holds the different items in the main menu. It is used to determine which
-/// items can the user select in the main menu.
+/// Main menu navigation options.
+///
+/// This enumeration holds the different items in the main menu. It is used to determine which items
+/// can the user select in the main menu.
 #[derive(Clone, Copy)]
 enum MainMenuItem {
+    /// "Start Game" menu option.
+    ///
     /// This variant represents the "Start Game" option in the main menu.
     StartGame,
+    /// "Options" menu option.
+    ///
     /// This variant represents the "Options" option in the main menu.
     Options,
+    /// "Quit" menu option.
+    ///
     /// This variant represents the "Quit" option in the main menu.
     Quit,
 }
 
+/// Options menu navigation choices.
+///
 /// This enumeration holds the different items in the options menu. It is used to determine which
 /// items can the user select in the options menu.
 #[derive(Clone, Copy)]
 enum OptionsMenuItem {
+    /// "Back" navigation option.
+    ///
     /// This variant represents the "Back" option in the options menu.
     Back,
+    /// "Map" selection option.
+    ///
     /// This variant represents the "Map" option in the options menu.
     Map,
 }
 
+/// Generic menu type configuration.
+///
 /// This enumeration holds the different specifics particular to each generic menu type in the
 /// application's interface. Generic here means they share enough features to be considered worth
 /// joining together part of their functionality.
 enum MenuType {
+    /// Main menu configuration.
+    ///
     /// This variant represents the main menu in the game.
     MainMenu(u8),
+    /// Options menu configuration.
+    ///
     /// This variant represents the options menu in the game.
     OptionsMenu(u8),
 }
 
 impl MenuType {
-    /// This function returns the string representation of the variant of the corresponding
-    /// enumeration, for use as part of the specifics of each menu type.
+    /// Returns the string representation of the menu type.
+    ///
+    /// This function provides the display name for each menu variant, used as the title in the
+    /// menu's border when rendering the interface.
     const fn repr(&self) -> &str {
         match self {
             Self::MainMenu(_) => "Main Menu",
@@ -757,7 +1082,10 @@ impl MenuType {
         }
     }
 
-    /// This function returns the value stored by each enumeration variant.
+    /// Returns the numeric value stored by the menu type variant.
+    ///
+    /// This function provides access to the number of menu items for layout calculations, allowing
+    /// the UI to properly size the menu containers.
     const fn value(&self) -> u8 {
         match self {
             Self::MainMenu(value) => *value,
@@ -766,13 +1094,19 @@ impl MenuType {
     }
 }
 
-/// This structure represents the custom type employed for indexing into files and retrieving
-/// the contents of labyrinth maps. It is used within a vector to get a kind of ordered hashmap.
+/// Labyrinth map data container.
+///
+/// This structure represents the custom type employed for indexing into files and retrieving the
+/// contents of labyrinth maps. It is used within a vector to get a kind of ordered hashmap.
 #[derive(Clone, PartialEq, PartialOrd)]
 struct Map {
+    /// Display name of the map.
+    ///
     /// This field represents the key retrieved as a filename without the file extension for the
     /// map.
     key: String,
+    /// Map content as rows of strings.
+    ///
     /// This field represents the actual map stored as a vector of strings, each string representing
     /// a row in the map.
     data: Vec<String>,
@@ -785,7 +1119,11 @@ impl Default for Map {
 }
 
 impl Map {
-    /// This function builds a new map given a file name and a multiline string slice.
+    /// Builds a new map from a filename and multiline string content.
+    ///
+    /// This function parses the provided string data into individual rows and extracts a clean
+    /// filename by removing the .labmap extension. It validates the input and returns an error if
+    /// the filename processing fails.
     fn new(key: OsString, data: &str) -> Result<Self> {
         let mut vec = Vec::new();
         for line in data.lines() {
@@ -809,10 +1147,30 @@ impl Map {
     }
 }
 
-/// This static holds the default map loaded by default in both the main game and the map menu.
+/// Default labyrinth map used as fallback.
+///
+/// This static holds the default map loaded in both the main game and the map menu.
 static MAP: LazyLock<&str> = LazyLock::new(|| {
     "\
-222222222222222222222
-133333333333333333332
-222222222222222222234"
+2222222222222222222222222222222
+2133333333222223333332222223332
+2232222223332223232232322223232
+2233333223232223232232322223232
+2232323223232223232232322222232
+2232323223333333232233333333232
+2232323222222222232222222222232
+2232323333333332233333333332232
+2232222222222232222222222232232
+2232333333322233333322332232232
+2232322232322222232322232232232
+2232322232333332232322232232232
+2232322232222232232322233332232
+2232322233332232232322232232232
+2232322222222232232322232232232
+2232333333333232232322232232232
+2232222222222232232322232232232
+2233333332222232232322232232232
+2222222232222232232322232232232
+2333333333333332232222232233334
+2222222222222222222222222222222"
 });
