@@ -3,13 +3,18 @@
 // TODO change the draw function to be fallible and make some of the functions that draw fallible as
 // well so that they don't use expect but instead return a result color_eyre type and errors cascade
 // back up
+// TODO change the file parsing function to accept mazes that are walled (i.e. are surrounded by 2s)
+// and disallow mazes that aren't surrounded by 2s except for the exit points (4s can be on the
+// edges)
+// TODO implement some generic functionality over the pathfinding algorithm to avoid repeating the
+// same logic when exploring possible neighbouring cells
 
 #![expect(
     clippy::cargo_common_metadata,
     reason = "Temporary allow during development."
 )]
 
-use std::{ffi::OsString, fs, rc::Rc, sync::LazyLock, time::Duration};
+use std::{cmp::Ordering, ffi::OsString, fs, rc::Rc, sync::LazyLock, time::Duration};
 
 use color_eyre::eyre::{OptionExt as _, Result};
 use ratatui::{
@@ -339,6 +344,10 @@ impl App {
         clippy::indexing_slicing,
         reason = "The collection is created in-place with few, known elements; there is no risk of bad indexing."
     )]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Temporary during development; will refactor later."
+    )]
     fn in_game(&self, frame: &mut Frame) {
         Self::clear(frame);
 
@@ -412,7 +421,7 @@ impl App {
                                     .expect("failed to retrieve first element of selected map")
                                     .len(),
                             )
-                            .expect("failed to convert rows"),
+                            .expect("failed to convert columns"),
                         );
                         for row in &self.map.data {
                             let mut inner = Vec::new();
@@ -438,29 +447,304 @@ impl App {
                     color: Color::Green,
                 });
             });
-        // let solution = Canvas::default()
-        //     .x_bounds([
-        //         (-(i32::from(space.width) / 2)).into(),
-        //         (space.width / 2).into(),
-        //     ])
-        //     .y_bounds([
-        //         (-(i32::from(space.height).div_euclid(2))).into(),
-        //         (i32::from(space.height) / 2).into(),
-        //     ])
-        //     .marker(Marker::Dot)
-        //     .paint(|ctx| {
-        //         ctx.draw(&Points {
-        //             coords: &[(0., 0.), (1., 0.), (-1., 0.)],
-        //             color: Color::Green,
-        //         });
-        //     });
+        let solution = Canvas::default()
+            .x_bounds([
+                (-rounded_div::i32(space.width.into(), 2)).into(),
+                (rounded_div::i32(space.width.into(), 2)).into(),
+            ])
+            .y_bounds([
+                (-rounded_div::i32(space.height.into(), 2)).into(),
+                (rounded_div::i32(space.height.into(), 2)).into(),
+            ])
+            .paint(|ctx| {
+                let mut all_paths_cells: Vec<Vec<(usize, usize)>> = Vec::new();
+                let mut marked_cells: Vec<Vec<MapCell>> = self
+                    .map
+                    .data
+                    .iter()
+                    .map(|line| {
+                        line.bytes()
+                            .map(|char| {
+                                if matches!(char, b'1' | b'3' | b'4') {
+                                    MapCell::Unexplored
+                                } else {
+                                    MapCell::None
+                                }
+                            })
+                            .collect::<Vec<MapCell>>()
+                    })
+                    .collect();
+                let root = MapFork {
+                    cell: None,
+                    children: Vec::new(),
+                };
+                let mut parent;
+
+                loop {
+                    parent = root.clone();
+                    let mut path_cells = Vec::new();
+                    let mut current_cell = self
+                        .map
+                        .data
+                        .iter()
+                        .enumerate()
+                        .find_map(|(row, line)| {
+                            line.bytes()
+                                .enumerate()
+                                .find_map(|(col, char)| (char == b'1').then_some((col, row)))
+                        })
+                        .expect("failed to retrieve entry point in map");
+
+                    'inner: loop {
+                        path_cells.push(current_cell);
+                        *marked_cells
+                            .get_mut(current_cell.1)
+                            .expect("failed to retrieve current cell row")
+                            .get_mut(current_cell.0)
+                            .expect("failed to retrieve current cell col") = MapCell::Explored;
+                        let mut possible_cells = Vec::new();
+
+                        // Check north (x, y - 1)
+                        if let Some(row) = self.map.data.get(current_cell.1.wrapping_sub(1)) {
+                            if let Some(col) = row.get(current_cell.0..=current_cell.0) {
+                                let iteration_cell = (
+                                    row.bytes()
+                                        .position(|value| value == col.as_bytes()[0])
+                                        .expect("failed to retrieve new col"),
+                                    self.map
+                                        .data
+                                        .iter()
+                                        .position(|value| value == row)
+                                        .expect("failed to retrieve new row"),
+                                );
+                                if matches!(col, "3" | "4") && !path_cells.contains(&iteration_cell)
+                                {
+                                    possible_cells.push(iteration_cell);
+                                }
+                            }
+                        }
+
+                        // Check south (x, y + 1)
+                        if let Some(row) = self.map.data.get(current_cell.1 + 1) {
+                            if let Some(col) = row.get(current_cell.0..=current_cell.0) {
+                                let iteration_cell = (
+                                    row.bytes()
+                                        .position(|value| value == col.as_bytes()[0])
+                                        .expect("failed to retrieve new col"),
+                                    self.map
+                                        .data
+                                        .iter()
+                                        .position(|value| value == row)
+                                        .expect("failed to retrieve new row"),
+                                );
+                                if matches!(col, "3" | "4") && !path_cells.contains(&iteration_cell)
+                                {
+                                    possible_cells.push(iteration_cell);
+                                }
+                            }
+                        }
+
+                        // Check west (x - 1, y)
+                        if let Some(row) = self.map.data.get(current_cell.1) {
+                            if let Some(col) =
+                                row.get(current_cell.0.wrapping_sub(1)..current_cell.0)
+                            {
+                                let iteration_cell = (
+                                    row.bytes()
+                                        .position(|value| value == col.as_bytes()[0])
+                                        .expect("failed to retrieve new col"),
+                                    self.map
+                                        .data
+                                        .iter()
+                                        .position(|value| value == row)
+                                        .expect("failed to retrieve new row"),
+                                );
+                                if matches!(col, "3" | "4") && !path_cells.contains(&iteration_cell)
+                                {
+                                    possible_cells.push(iteration_cell);
+                                }
+                            }
+                        }
+
+                        // Check east (x + 1, y)
+                        if let Some(row) = self.map.data.get(current_cell.1) {
+                            if let Some(col) = row.get((current_cell.0 + 1)..=(current_cell.0 + 1))
+                            {
+                                let iteration_cell = (
+                                    row.bytes()
+                                        .position(|value| value == col.as_bytes()[0])
+                                        .expect("failed to retrieve new col"),
+                                    self.map
+                                        .data
+                                        .iter()
+                                        .position(|value| value == row)
+                                        .expect("failed to retrieve new row"),
+                                );
+                                if matches!(col, "3" | "4") && !path_cells.contains(&iteration_cell)
+                                {
+                                    possible_cells.push(iteration_cell);
+                                }
+                            }
+                        }
+
+                        match possible_cells.len().cmp(&1) {
+                            Ordering::Greater => {
+                                let new_fork = MapFork {
+                                    cell: Some(current_cell),
+                                    children: Vec::new(),
+                                };
+                                if possible_cells.iter().all(|&cell| {
+                                    *marked_cells
+                                        .get(cell.1)
+                                        .expect("failed to retrieve row")
+                                        .get(cell.0)
+                                        .expect("failed to retrieve col")
+                                        == MapCell::Unexplored
+                                }) {
+                                    parent.children.push(new_fork.clone());
+                                }
+                                parent = new_fork;
+
+                                if possible_cells.iter().any(|&cell| {
+                                    *marked_cells
+                                        .get(cell.1)
+                                        .expect("failed to retrieve row")
+                                        .get(cell.0)
+                                        .expect("faled to retrieve col")
+                                        == MapCell::Unexplored
+                                }) {
+                                    let filtered_cells: Vec<(usize, usize)> = possible_cells
+                                        .iter()
+                                        .filter(|&&cell| {
+                                            *marked_cells
+                                                .get(cell.1)
+                                                .expect("failed to retrieve row")
+                                                .get(cell.0)
+                                                .expect("faled to retrieve col")
+                                                == MapCell::Unexplored
+                                        })
+                                        .copied()
+                                        .collect();
+
+                                    current_cell = *filtered_cells
+                                        .first()
+                                        .expect("failed to retrieve unexplored cell");
+
+                                    continue 'inner;
+                                }
+
+                                let mut competents = vec![0; parent.children.len()];
+                                for (idx, fork) in parent.children.iter().enumerate() {
+                                    Self::recursive_exploration(
+                                        &mut competents,
+                                        &marked_cells,
+                                        fork,
+                                        idx,
+                                    );
+                                }
+                                let winner = competents.into_iter().max().expect(
+                                    "failed to retrieve competent with the most brownie points",
+                                );
+                                if winner != 0 {
+                                    // TODO assign to the current cell.
+                                    // At this point, we have the forking point coordinate, the next
+                                    // forking point, and a past path that already connected the
+                                    // two. One can trust this invariant because at this point, the
+                                    // forking point that the current cell is at does not have any
+                                    // unexplored cells around it, and the next forking point that
+                                    // should be explored is already registered as a child node of
+                                    // the current cell from already having gone through it in
+                                    // another path during some other iteration. Thus, the current
+                                    // cell's new value will be determined by the first cell that
+                                    // connected the part of a path that happened to traverse these
+                                    // two points. This will be true for any paths containing both
+                                    // points.
+                                    // Summary: search in the vector containing all paths for a path
+                                    // that contains both points. Then take that path, search for
+                                    // the current cell's position, and fetch the cell that comes
+                                    // right after it in the ordered collection that the path is.
+                                    // That will be the new value of the current cell.
+
+                                    continue 'inner;
+                                }
+                            }
+                            Ordering::Equal => {
+                                current_cell = *possible_cells
+                                    .first()
+                                    .expect("failed to retrieve next cell");
+
+                                continue 'inner;
+                            }
+                            _ => {}
+                        }
+
+                        break;
+                    }
+
+                    all_paths_cells.push(path_cells);
+
+                    if marked_cells.iter().all(|value| {
+                        value
+                            .iter()
+                            .all(|value| matches!(value, MapCell::Explored | MapCell::None))
+                    }) {
+                        break;
+                    }
+                }
+            });
 
         frame.render_widget(maze, space);
-        // frame.render_widget(solution, space);
+        frame.render_widget(solution, space);
     }
 
-    /// This function handles scanning for files in the directory in which the binary was executed
-    /// and checks if there are any .labmap files to read in labyrinth maps for the game.
+    /// This function recursively seeks for free, unexplored cells in the given forking point, by
+    /// exploring all child nodes. For each child node, it considers if there are any unexplored
+    /// cells around, and if there are, then this adds 'brownie' points to the current iteration
+    /// competent. The competent is a single, constant element in the `competents` vector that is
+    /// initially called with the first stack frame allocation. This function thus relies on prior
+    /// iteration through a vector of competents (which is NOT the `competents` vector, as this only
+    /// holds the counter.)
+    fn recursive_exploration(
+        competents: &mut Vec<i32>,
+        marked_cells: &Vec<Vec<MapCell>>,
+        current: &MapFork,
+        current_competent: usize,
+    ) {
+        let cell = current
+            .cell
+            .expect("failed to retrieve non-virtual, non-root, child node in tree");
+        let mut check = |pos1: usize, pos2: usize| {
+            if let Some(row) = marked_cells.get(pos1) {
+                if let Some(col) = row.get(pos2) {
+                    if *col == MapCell::Unexplored {
+                        *competents
+                            .get_mut(current_competent)
+                            .expect("failed to retrieve competent") += 1;
+                    }
+                }
+            }
+        };
+        let positions = [
+            (cell.1 - 1, cell.0),
+            (cell.1 + 1, cell.0),
+            (cell.1, cell.0 - 1),
+            (cell.1, cell.0 + 1),
+        ];
+
+        for (pos1, pos2) in positions {
+            check(pos1, pos2);
+        }
+
+        if current.children.is_empty() {
+            return;
+        }
+        for child in &current.children {
+            Self::recursive_exploration(competents, marked_cells, child, current_competent);
+        }
+    }
+
+    /// This function handles scanning for files in the directory in which the binary was executed.
+    /// It checks for .labmap files to read in maze maps.
     fn fetch_files(&mut self) -> Result<()> {
         for file in fs::read_dir(".")? {
             match file {
@@ -809,10 +1093,51 @@ impl Map {
     }
 }
 
+/// This enumeration serves as a way of mapping elements of a maze map to possible states in which
+/// each cell might find itself during the solving process.
+#[derive(PartialEq, PartialOrd)]
+enum MapCell {
+    /// This variant represents the state of already having explored the cell.
+    Explored,
+    /// This variant represents the state of not yet having explored the cell.
+    Unexplored,
+    /// This variant represents cells that are neither to be explored nor have been explored. This
+    /// is useful for blocker cells alone, which are not meant to be explored.
+    None,
+}
+
+/// This structure represents cells in the map where multiple paths may be taken (i.e. forks.)
+#[derive(Clone)]
+struct MapFork {
+    /// This field represents the cell in question where the path is divided in two or more paths.
+    cell: Option<(usize, usize)>,
+    /// This field represents the vector of possible paths to take from the [`cell`](MapFork::cell)
+    /// field onwards.
+    children: Vec<MapFork>,
+}
+
 /// This static holds the default map loaded by default in both the main game and the map menu.
 static MAP: LazyLock<&str> = LazyLock::new(|| {
     "\
-222222222222222222222
-133333333333333333332
-222222222222222222234"
+2222222222222222222222222222222
+2133333333222223333332222223332
+2232222223332223232232322223232
+2233333223232223232232322223232
+2232323223232223232232322222232
+2232323223333333232233333333232
+2232323222222222232222222222232
+2232323333333332233333333332232
+2232222222222232222222222232232
+2232333333322233333322332232232
+2232322232322222232322232232232
+2232322232333332232322232232232
+2232322232222232232322233332232
+2232322233332232232322232232232
+2232322222222232232322232232232
+2232333333333232232322232232232
+2232222222222232232322232232232
+2233333332222232232322232232232
+2222222232222232232322232232232
+2333333333333332232222232233334
+2222222222222222222222222222222"
 });
