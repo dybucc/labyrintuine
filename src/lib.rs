@@ -24,7 +24,7 @@ use ratatui::{
     text::Line,
     widgets::{
         canvas::{Canvas, Points},
-        Block, BorderType, Clear,
+        Block, BorderType, Borders, Clear,
     },
     DefaultTerminal, Frame,
 };
@@ -492,8 +492,8 @@ impl App {
     /// This function may return errors from coordinate conversion operations or entry point
     /// detection.
     #[expect(
-        clippy::indexing_slicing,
-        reason = "The collection is created in-place with few, known elements; there is no risk of bad indexing."
+        clippy::too_many_lines,
+        reason = "UI rendering function requires many lines for layout and drawing operations."
     )]
     fn in_game(&mut self, frame: &mut Frame) -> Result<()> {
         Self::clear(frame);
@@ -535,18 +535,52 @@ impl App {
             .ok_or_eyre("failed to retrieve maze in selected map")?
             .len();
 
-        let space = Layout::vertical([
+        // Create overall layout: maze area + tooltip at bottom
+        let overall_layout = Layout::vertical([
+            Constraint::Min(1),    // Maze and padding area
+            Constraint::Length(3), // Tooltip block
+        ])
+        .split(frame.area());
+
+        let maze_content_area = *overall_layout
+            .first()
+            .ok_or_eyre("failed to get maze content area from layout")?;
+        let tooltip_full_area = *overall_layout
+            .last()
+            .ok_or_eyre("failed to get tooltip area from layout")?;
+
+        // Center the tooltip horizontally like the maze
+        let tooltip_area = Layout::horizontal([
+            Constraint::Min(1),
+            Constraint::Length(u16::try_from(maze_columns)?),
+            Constraint::Min(1),
+        ])
+        .split(tooltip_full_area)
+        .get(1)
+        .copied()
+        .ok_or_eyre("failed to get centered tooltip area from horizontal layout")?;
+
+        // Create maze layout within the content area
+        let main_layout = Layout::vertical([
             Constraint::Min(1),
             Constraint::Length(u16::try_from(maze_rows)?),
             Constraint::Min(1),
         ])
-        .split(frame.area())[1];
+        .split(maze_content_area);
+
+        let maze_area = main_layout
+            .get(1)
+            .ok_or_eyre("failed to get maze area from layout")?;
+
         let space = Layout::horizontal([
             Constraint::Min(1),
             Constraint::Length(u16::try_from(maze_columns)?),
             Constraint::Min(1),
         ])
-        .split(space)[1];
+        .split(*maze_area)
+        .get(1)
+        .copied()
+        .ok_or_eyre("failed to get maze space from horizontal layout")?;
 
         // Pre-compute screen coordinates to handle errors before closures
         let mut wall_coords = Vec::new();
@@ -598,6 +632,16 @@ impl App {
 
         frame.render_widget(maze, space);
         frame.render_widget(solution, space);
+
+        // Render tooltip as a block at the bottom center with top border
+        let tooltip_block = Block::bordered()
+            .title("(h) return to menu")
+            .title_alignment(Alignment::Center)
+            .style(Style::default().fg(Color::Green))
+            .border_type(BorderType::Plain)
+            .borders(Borders::TOP);
+
+        frame.render_widget(tooltip_block, tooltip_area);
 
         Ok(())
     }
