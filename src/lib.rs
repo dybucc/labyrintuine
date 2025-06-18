@@ -1,8 +1,5 @@
 //! This module contains the main application logic for the game.
 
-// TODO change the draw function to be fallible and make some of the functions that draw fallible as
-// well so that they don't use expect but instead return a result color_eyre type and errors cascade
-// back up
 // TODO modularize the code in the entire library
 
 #![expect(
@@ -161,7 +158,10 @@ impl App {
     /// - [`std::io::Error`]
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
         while !self.exit {
-            let _ = terminal.draw(|frame| self.draw(frame))?;
+            let _ = terminal.try_draw(|frame| {
+                self.draw(frame)
+                    .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))
+            })?;
             self.handle_events()?;
         }
 
@@ -172,13 +172,19 @@ impl App {
     ///
     /// This function renders different screens based on the current state stored in the [`App`]
     /// structure, dispatching to the appropriate rendering function for each screen type.
-    fn draw(&mut self, frame: &mut Frame) {
+    ///
+    /// # Errors
+    ///
+    /// This function may return errors from drawing operations or data conversion failures.
+    fn draw(&mut self, frame: &mut Frame) -> Result<()> {
         match &self.screen {
             Screen::MainMenu(item) => Self::main_menu(frame, *item),
             Screen::OptionsMenu(item) => Self::options_menu(frame, *item),
-            Screen::InGame => self.in_game(frame),
-            Screen::MapMenu => self.map_menu(frame),
+            Screen::InGame => self.in_game(frame)?,
+            Screen::MapMenu => self.map_menu(frame)?,
         }
+
+        Ok(())
     }
 
     /// Handles input events and updates the application state accordingly.
@@ -346,6 +352,10 @@ impl App {
     /// This function displays a viewport containing all loadable maze maps from the current
     /// directory. It provides scrolling functionality and visual indicators for the currently
     /// selected map and the map that's actively being used.
+    ///
+    /// # Errors
+    ///
+    /// This function may return errors if the viewport map cannot be retrieved.
     #[expect(
         clippy::indexing_slicing,
         reason = "The collection is created in-place with few, known elements; there is no risk of bad indexing."
@@ -354,7 +364,7 @@ impl App {
         clippy::missing_asserts_for_indexing,
         reason = "The collection is created in-place with few, known elements; there is no risk of bad indexing."
     )]
-    fn map_menu(&mut self, frame: &mut Frame) {
+    fn map_menu(&mut self, frame: &mut Frame) -> Result<()> {
         Self::clear(frame);
 
         let space = Layout::horizontal([
@@ -399,12 +409,12 @@ impl App {
         let active_content_style = Style::default().fg(Color::White).bg(Color::Green);
 
         for (idx, map) in viewport_maps.into_iter().enumerate() {
-            let (selector, entry) = if *map
-                == self
-                    .viewport_map
-                    .clone()
-                    .expect("failed to retrieve cursor-selected map")
-            {
+            let viewport_map = self
+                .viewport_map
+                .clone()
+                .ok_or_eyre("failed to retrieve cursor-selected map")?;
+
+            let (selector, entry) = if *map == viewport_map {
                 (
                     {
                         if *map == self.map {
@@ -431,6 +441,8 @@ impl App {
             frame.render_widget(selector, inner_selector[idx]);
             frame.render_widget(entry, inner_list[idx]);
         }
+
+        Ok(())
     }
 
     /// Transforms maze coordinates to screen coordinates for canvas rendering.
@@ -438,31 +450,33 @@ impl App {
     /// This function converts maze coordinates (col, row) to screen coordinates (x, y) using the
     /// standard transformation formulas: coordinate[i] = (n - 1) / 2 - i for rows (ascending order)
     /// and coordinate[i] = i - (n - 1) / 2 for columns (descending order).
-    fn transform_maze_to_screen_coords(&self, maze_coords: &[(usize, usize)]) -> Vec<(f64, f64)> {
-        let rows_n = f64::from(u16::try_from(self.map.data.len()).expect("failed to convert rows"));
-        let cols_n = f64::from(
-            u16::try_from(
-                self.map
-                    .data
-                    .first()
-                    .expect("failed to retrieve first element of selected map")
-                    .len(),
-            )
-            .expect("failed to convert columns"),
-        );
+    ///
+    /// # Errors
+    ///
+    /// This function may return errors from coordinate conversion operations.
+    fn transform_maze_to_screen_coords(
+        &self,
+        maze_coords: &[(usize, usize)],
+    ) -> Result<Vec<(f64, f64)>> {
+        let rows_n = f64::from(u16::try_from(self.map.data.len())?);
+        let cols_n = f64::from(u16::try_from(
+            self.map
+                .data
+                .first()
+                .ok_or_eyre("failed to retrieve first element of selected map")?
+                .len(),
+        )?);
 
         maze_coords
             .iter()
             .map(|&(col, row)| {
                 // Row transformation: coordinate[i] = (n - 1) / 2 - i
-                let screen_y = (rows_n - 1.) / 2.
-                    - f64::from(u16::try_from(row).expect("failed to convert row to u16"));
+                let screen_y = (rows_n - 1.) / 2. - f64::from(u16::try_from(row)?);
 
                 // Column transformation: coordinate[i] = i - (n - 1) / 2
-                let screen_x = f64::from(u16::try_from(col).expect("failed to convert col to u16"))
-                    - (cols_n - 1.) / 2.;
+                let screen_x = f64::from(u16::try_from(col)?) - (cols_n - 1.) / 2.;
 
-                (screen_x, screen_y)
+                Ok((screen_x, screen_y))
             })
             .collect()
     }
@@ -472,11 +486,16 @@ impl App {
     /// This function displays the currently selected labyrinth and runs the pathfinding algorithm
     /// to show the solution. It renders both the maze walls and the computed paths using [`Canvas`]
     /// widgets for precise coordinate-based drawing.
+    ///
+    /// # Errors
+    ///
+    /// This function may return errors from coordinate conversion operations or entry point
+    /// detection.
     #[expect(
         clippy::indexing_slicing,
         reason = "The collection is created in-place with few, known elements; there is no risk of bad indexing."
     )]
-    fn in_game(&mut self, frame: &mut Frame) {
+    fn in_game(&mut self, frame: &mut Frame) -> Result<()> {
         Self::clear(frame);
 
         // Initialize animation steps if not already done
@@ -492,7 +511,7 @@ impl App {
                         .enumerate()
                         .find_map(|(col, char)| (char == b'1').then_some((col, row)))
                 })
-                .expect("failed to retrieve entry point in map");
+                .ok_or_eyre("failed to retrieve entry point in map")?;
 
             // Record animation steps
             let mut initial_path = Vec::new();
@@ -513,29 +532,34 @@ impl App {
             .map
             .data
             .first()
-            .expect("failed to retrieve maze in selected map")
+            .ok_or_eyre("failed to retrieve maze in selected map")?
             .len();
 
         let space = Layout::vertical([
             Constraint::Min(1),
-            Constraint::Length(
-                maze_rows
-                    .try_into()
-                    .expect("failed to convert maze_rows to u16"),
-            ),
+            Constraint::Length(u16::try_from(maze_rows)?),
             Constraint::Min(1),
         ])
         .split(frame.area())[1];
         let space = Layout::horizontal([
             Constraint::Min(1),
-            Constraint::Length(
-                maze_columns
-                    .try_into()
-                    .expect("failed to convert maze_columns to u16"),
-            ),
+            Constraint::Length(u16::try_from(maze_columns)?),
             Constraint::Min(1),
         ])
         .split(space)[1];
+
+        // Pre-compute screen coordinates to handle errors before closures
+        let mut wall_coords = Vec::new();
+        for (row_idx, row) in self.map.data.iter().enumerate() {
+            for (col_idx, cell) in row.bytes().enumerate() {
+                if cell == b'2' {
+                    wall_coords.push((col_idx, row_idx));
+                }
+            }
+        }
+        let wall_screen_coords = self.transform_maze_to_screen_coords(&wall_coords)?;
+        let animation_screen_coords =
+            self.transform_maze_to_screen_coords(&self.current_animation_path)?;
 
         let maze = Canvas::default()
             .x_bounds([
@@ -548,21 +572,9 @@ impl App {
             ])
             .marker(Marker::Dot)
             .paint(|ctx| {
-                // Collect all maze wall coordinates
-                let mut wall_coords = Vec::new();
-
-                for (row_idx, row) in self.map.data.iter().enumerate() {
-                    for (col_idx, cell) in row.bytes().enumerate() {
-                        if cell == b'2' {
-                            wall_coords.push((col_idx, row_idx));
-                        }
-                    }
-                }
-
-                // Transform to screen coordinates and render
-                let screen_coords = self.transform_maze_to_screen_coords(&wall_coords);
+                // Render pre-computed wall coordinates
                 ctx.draw(&Points {
-                    coords: &screen_coords,
+                    coords: &wall_screen_coords,
                     color: Color::Green,
                 });
             });
@@ -577,19 +589,17 @@ impl App {
             ])
             .marker(Marker::Dot)
             .paint(|ctx| {
-                // Transform current animation path coordinates to screen coordinates for rendering
-                let screen_coordinates =
-                    self.transform_maze_to_screen_coords(&self.current_animation_path);
-
-                // Draw current animation path points
+                // Render pre-computed animation coordinates
                 ctx.draw(&Points {
-                    coords: &screen_coordinates,
+                    coords: &animation_screen_coords,
                     color: Color::Red,
                 });
             });
 
         frame.render_widget(maze, space);
         frame.render_widget(solution, space);
+
+        Ok(())
     }
 
     /// Records animation steps during pathfinding for later visualization.
