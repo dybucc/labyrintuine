@@ -3,9 +3,6 @@
 // TODO change the draw function to be fallible and make some of the functions that draw fallible as
 // well so that they don't use expect but instead return a result color_eyre type and errors cascade
 // back up
-// TODO change the file parsing function to accept mazes that are walled (i.e. are surrounded by 2s)
-// and disallow mazes that aren't surrounded by 2s except for the exit points (4s can be on the
-// edges)
 // TODO modularize the code in the entire library
 
 #![expect(
@@ -695,62 +692,89 @@ impl App {
 
     /// Validates the format and content of labyrinth map files.
     ///
-    /// This function performs the final validation check on file contents that have been deemed
-    /// potentially valid. It ensures the maze format follows the specification: contains only valid
-    /// characters (1-4), has consistent row lengths, exactly one entry point, and properly
-    /// positioned exit points on the edges.
+    /// This function performs validation to ensure the maze format follows the specification:
+    /// - Contains only valid characters (1-4)
+    /// - Has consistent row lengths
+    /// - Has exactly one entry point (1)
+    /// - Is completely surrounded by walls (2s) except for exit points on the edges
     fn parse_file_contents(input: &str) -> bool {
-        let mut entry_point_counter = 0;
-        let mut previous_line = "";
-        let mut string_vector = Vec::new();
+        let lines: Vec<&str> = input.lines().collect();
 
-        for (idx, line) in input.lines().enumerate() {
-            if line
-                .bytes()
-                .all(|char| matches!(char, b'1' | b'2' | b'3' | b'4'))
-            {
-                for char in line.bytes() {
-                    if char == b'1' {
-                        entry_point_counter += 1;
-                    }
-                }
-                if entry_point_counter > 1 {
-                    break;
-                }
-                if idx > 0 && line.len() != previous_line.len() {
-                    break;
-                }
-
-                string_vector.push(line);
-            } else {
-                break;
-            }
-
-            previous_line = line;
+        // Must have at least 3x3 to form a proper walled maze
+        if lines.len() < 3 {
+            return false;
         }
 
-        if string_vector.len() == input.lines().count() {
-            for line in string_vector.iter().filter(|line| {
-                *line
-                    != string_vector
-                        .first()
-                        .expect("failed to retrieve first element in final string vector")
-                    && *line
-                        != string_vector
-                            .last()
-                            .expect("failed to retrieve last element in final string vector")
-            }) {
-                for (idx, _) in line.match_indices(['4', '1']) {
-                    if idx != 0 && idx != line.len() - 1 {
+        let mut entry_point_counter = 0;
+        let Some(first_line) = lines.first() else {
+            return false;
+        };
+        let expected_width = first_line.len();
+
+        // Must have at least 3 columns to form proper walls
+        if expected_width < 3 {
+            return false;
+        }
+
+        // Validate each line
+        for line in &lines {
+            // Check consistent row lengths
+            if line.len() != expected_width {
+                return false;
+            }
+
+            // Check valid characters only
+            if !line
+                .bytes()
+                .all(|byte| matches!(byte, b'1' | b'2' | b'3' | b'4'))
+            {
+                return false;
+            }
+
+            // Count entry points
+            for byte in line.bytes() {
+                if byte == b'1' {
+                    entry_point_counter += 1;
+                }
+            }
+
+            // Too many entry points
+            if entry_point_counter > 1 {
+                return false;
+            }
+        }
+
+        // Must have exactly one entry point
+        if entry_point_counter != 1 {
+            return false;
+        }
+
+        let last_row_idx = lines.len() - 1;
+        let last_col_idx = expected_width - 1;
+
+        // Check boundary walls and validate maze structure in a single pass
+        for (row_idx, line) in lines.iter().enumerate() {
+            for (col_idx, byte) in line.bytes().enumerate() {
+                let is_edge = row_idx == 0
+                    || row_idx == last_row_idx
+                    || col_idx == 0
+                    || col_idx == last_col_idx;
+
+                if is_edge {
+                    // On edges: only walls (2) or exit points (4) allowed
+                    if !matches!(byte, b'2' | b'4') {
+                        return false;
+                    }
+                } else {
+                    // Interior: exit points (4) not allowed
+                    if byte == b'4' {
                         return false;
                     }
                 }
             }
-
-            true
-        } else {
-            false
         }
+
+        true
     }
 
     /// Handles 'j' key press events for downward navigation.
