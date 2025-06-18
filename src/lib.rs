@@ -6,9 +6,6 @@
 // TODO change the file parsing function to accept mazes that are walled (i.e. are surrounded by 2s)
 // and disallow mazes that aren't surrounded by 2s except for the exit points (4s can be on the
 // edges)
-// TODO change the in_game function to reuse the maze_cols and maze_rows variables when computing
-// the rows_n and cols_n variables in the solution canvas paint closure
-// TODO change the in_game function to get rid of the all_paths variable if it really isn't used
 // TODO modularize the code in the entire library
 
 #![expect(
@@ -502,12 +499,10 @@ impl App {
 
             // Record animation steps
             let mut initial_path = Vec::new();
-            let mut all_paths = Vec::new();
             Self::record_animation_steps(
                 &self.map.data,
                 entry_point,
                 &mut initial_path,
-                &mut all_paths,
                 &mut self.animation_steps,
             );
 
@@ -604,13 +599,11 @@ impl App {
     ///
     /// This method performs depth-first search to explore the maze and records each step of the
     /// algorithm (forward moves and backtracking) for animated playback. It captures the exact
-    /// sequence of the pathfinding algorithm's exploration while finding all possible paths from
-    /// the entry point to exits or dead ends.
+    /// sequence of the pathfinding algorithm's exploration from the entry point through the maze.
     fn record_animation_steps(
         map_data: &[String],
         start: (usize, usize),
         current_path: &mut Vec<(usize, usize)>,
-        all_paths: &mut Vec<Vec<(usize, usize)>>,
         animation_steps: &mut Vec<AnimationStep>,
     ) {
         // Record adding current position to path
@@ -621,9 +614,7 @@ impl App {
         if let Some(row) = map_data.get(start.1) {
             if let Some(cell) = row.as_bytes().get(start.0) {
                 if *cell == b'4' {
-                    // Found exit - save complete path
-                    all_paths.push(current_path.clone());
-                    // Record removing position during backtrack
+                    // Found exit - record removing position during backtrack
                     let _ = current_path.pop();
                     animation_steps.push(AnimationStep::Remove(start.0, start.1));
                     return;
@@ -633,8 +624,6 @@ impl App {
 
         // Explore all four directions (north, south, east, west)
         let directions = [(0_i32, -1_i32), (0, 1), (1, 0), (-1, 0)];
-
-        let mut found_next_move = false;
 
         for (dx, dy) in directions {
             // Calculate neighbor coordinates with proper bounds checking
@@ -657,23 +646,16 @@ impl App {
                 if let Some(cell) = row.chars().nth(new_pos.0) {
                     // Only explore walkable cells ('3') or exit ('4')
                     if matches!(cell, '3' | '4') {
-                        found_next_move = true;
                         // Recursively explore from this position
                         Self::record_animation_steps(
                             map_data,
                             new_pos,
                             current_path,
-                            all_paths,
                             animation_steps,
                         );
                     }
                 }
             }
-        }
-
-        // If no valid moves found, this is a dead end - save path
-        if !found_next_move {
-            all_paths.push(current_path.clone());
         }
 
         // Record removing position during backtrack
