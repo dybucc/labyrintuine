@@ -4,11 +4,6 @@
 //! game features a modular architecture with separate concerns for UI rendering, event handling,
 //! file operations, and core application logic.
 
-#![expect(
-    clippy::cargo_common_metadata,
-    reason = "Temporary allow during development."
-)]
-
 mod app;
 mod events;
 mod file_loader;

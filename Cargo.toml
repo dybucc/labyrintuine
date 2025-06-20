@@ -2,6 +2,11 @@
 name = "labyrintuine"
 version = "0.1.0"
 edition = "2021"
+description = "A terminal-based maze generator and solver with a user interface."
+license = "Unlicense"
+repository = "https://github.com/dybucc/labyrintuine"
+keywords = ["maze", "generator", "solver", "terminal", "UI"]
+categories = ["command-line-utilities", "games"]
 
 [lints.rust]
 absolute_paths_not_starting_with_crate = "deny"
