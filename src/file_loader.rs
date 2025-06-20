@@ -120,3 +120,84 @@ pub(crate) fn parse_file_contents(input: &str) -> bool {
 
     true
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_file_contents_valid_maze() {
+        let valid_maze = "2222\n2134\n2222";
+        assert!(parse_file_contents(valid_maze));
+    }
+
+    #[test]
+    fn test_parse_file_contents_valid_complex_maze() {
+        let valid_maze = "22224\n21332\n23332\n22222";
+        assert!(parse_file_contents(valid_maze));
+    }
+
+    #[test]
+    fn test_parse_file_contents_too_small_height() {
+        let invalid_maze = "222\n213";
+        assert!(!parse_file_contents(invalid_maze));
+    }
+
+    #[test]
+    fn test_parse_file_contents_too_small_width() {
+        let invalid_maze = "22\n21\n22";
+        assert!(!parse_file_contents(invalid_maze));
+    }
+
+    #[test]
+    fn test_parse_file_contents_inconsistent_row_lengths() {
+        let invalid_maze = "2222\n213\n2222";
+        assert!(!parse_file_contents(invalid_maze));
+    }
+
+    #[test]
+    fn test_parse_file_contents_invalid_characters() {
+        let invalid_maze = "2222\n21x4\n2222";
+        assert!(!parse_file_contents(invalid_maze));
+    }
+
+    #[test]
+    fn test_parse_file_contents_no_entry_point() {
+        let invalid_maze = "2222\n2334\n2222";
+        assert!(!parse_file_contents(invalid_maze));
+    }
+
+    #[test]
+    fn test_parse_file_contents_multiple_entry_points() {
+        let invalid_maze = "2222\n2114\n2222";
+        assert!(!parse_file_contents(invalid_maze));
+    }
+
+    #[test]
+    fn test_parse_file_contents_entry_point_on_edge() {
+        let invalid_maze = "2122\n2334\n2222";
+        assert!(!parse_file_contents(invalid_maze));
+    }
+
+    #[test]
+    fn test_parse_file_contents_exit_point_in_interior() {
+        let invalid_maze = "2222\n2143\n2222";
+        assert!(!parse_file_contents(invalid_maze));
+    }
+
+    #[test]
+    fn test_parse_file_contents_non_wall_on_edge() {
+        let invalid_maze = "2322\n2134\n2222";
+        assert!(!parse_file_contents(invalid_maze));
+    }
+
+    #[test]
+    fn test_parse_file_contents_empty_input() {
+        assert!(!parse_file_contents(""));
+    }
+
+    #[test]
+    fn test_parse_file_contents_single_line() {
+        assert!(!parse_file_contents("222"));
+    }
+}

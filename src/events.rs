@@ -218,3 +218,132 @@ pub(crate) fn handle_h_events(app: &mut App) {
         _ => {}
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_test_app() -> App {
+        App::new()
+    }
+
+    #[test]
+    fn test_handle_j_events_main_menu_start_game() {
+        let mut app = create_test_app();
+        app.screen = Screen::MainMenu(MainMenuItem::StartGame);
+
+        handle_j_events(&mut app).expect("j event handling should succeed in test");
+
+        assert_eq!(app.screen, Screen::MainMenu(MainMenuItem::Options));
+    }
+
+    #[test]
+    fn test_handle_j_events_main_menu_options() {
+        let mut app = create_test_app();
+        app.screen = Screen::MainMenu(MainMenuItem::Options);
+
+        handle_j_events(&mut app).expect("j event handling should succeed in test");
+
+        assert_eq!(app.screen, Screen::MainMenu(MainMenuItem::Quit));
+    }
+
+    #[test]
+    fn test_handle_j_events_options_menu_map() {
+        let mut app = create_test_app();
+        app.screen = Screen::OptionsMenu(OptionsMenuItem::Map);
+
+        handle_j_events(&mut app).expect("j event handling should succeed in test");
+
+        assert_eq!(app.screen, Screen::OptionsMenu(OptionsMenuItem::Back));
+    }
+
+    #[test]
+    fn test_handle_k_events_main_menu_quit() {
+        let mut app = create_test_app();
+        app.screen = Screen::MainMenu(MainMenuItem::Quit);
+
+        handle_k_events(&mut app).expect("k event handling should succeed in test");
+
+        assert_eq!(app.screen, Screen::MainMenu(MainMenuItem::Options));
+    }
+
+    #[test]
+    fn test_handle_k_events_main_menu_options() {
+        let mut app = create_test_app();
+        app.screen = Screen::MainMenu(MainMenuItem::Options);
+
+        handle_k_events(&mut app).expect("k event handling should succeed in test");
+
+        assert_eq!(app.screen, Screen::MainMenu(MainMenuItem::StartGame));
+    }
+
+    #[test]
+    fn test_handle_k_events_options_menu_back() {
+        let mut app = create_test_app();
+        app.screen = Screen::OptionsMenu(OptionsMenuItem::Back);
+
+        handle_k_events(&mut app).expect("k event handling should succeed in test");
+
+        assert_eq!(app.screen, Screen::OptionsMenu(OptionsMenuItem::Map));
+    }
+
+    #[test]
+    fn test_handle_l_events_main_menu_start_game() {
+        let mut app = create_test_app();
+        app.screen = Screen::MainMenu(MainMenuItem::StartGame);
+
+        handle_l_events(&mut app).expect("l event handling should succeed in test");
+
+        assert_eq!(app.screen, Screen::InGame);
+    }
+
+    #[test]
+    fn test_handle_l_events_main_menu_options() {
+        let mut app = create_test_app();
+        app.screen = Screen::MainMenu(MainMenuItem::Options);
+
+        handle_l_events(&mut app).expect("l event handling should succeed in test");
+
+        assert_eq!(app.screen, Screen::OptionsMenu(OptionsMenuItem::Map));
+    }
+
+    #[test]
+    fn test_handle_l_events_main_menu_quit() {
+        let mut app = create_test_app();
+        app.screen = Screen::MainMenu(MainMenuItem::Quit);
+
+        handle_l_events(&mut app).expect("l event handling should succeed in test");
+
+        assert!(app.exit);
+    }
+
+    #[test]
+    fn test_handle_l_events_options_menu_back() {
+        let mut app = create_test_app();
+        app.screen = Screen::OptionsMenu(OptionsMenuItem::Back);
+
+        handle_l_events(&mut app).expect("l event handling should succeed in test");
+
+        assert_eq!(app.screen, Screen::MainMenu(MainMenuItem::StartGame));
+    }
+
+    #[test]
+    fn test_handle_h_events_in_game() {
+        let mut app = create_test_app();
+        app.screen = Screen::InGame;
+
+        handle_h_events(&mut app);
+
+        assert_eq!(app.screen, Screen::MainMenu(MainMenuItem::StartGame));
+    }
+
+    #[test]
+    fn test_handle_h_events_map_menu() {
+        let mut app = create_test_app();
+        app.screen = Screen::MapMenu;
+
+        handle_h_events(&mut app);
+
+        assert_eq!(app.screen, Screen::OptionsMenu(OptionsMenuItem::Map));
+    }
+}

@@ -436,3 +436,307 @@ pub(crate) fn in_game(app: &mut App, frame: &mut Frame) -> Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pathfinding::AnimationManager;
+    use ratatui::{backend::TestBackend, Terminal};
+
+    /// Creates a minimal test app for UI testing.
+    fn create_test_app() -> App {
+        App::new()
+    }
+
+    /// Creates a test terminal with known dimensions for UI testing.
+    fn create_test_terminal() -> Terminal<TestBackend> {
+        let backend = TestBackend::new(80, 24);
+        Terminal::new(backend).expect("failed to create test terminal")
+    }
+
+    /// Creates a test map for UI testing.
+    fn create_test_map() -> Map {
+        Map {
+            key: "test_map".to_owned(),
+            data: vec![
+                "222222222".to_owned(),
+                "2100000002".to_owned(),
+                "2020202002".to_owned(),
+                "2000203002".to_owned(),
+                "222222222".to_owned(),
+            ],
+        }
+    }
+
+    #[test]
+    fn test_draw_main_menu() {
+        let mut app = create_test_app();
+        let mut terminal = create_test_terminal();
+        app.screen = Screen::MainMenu(MainMenuItem::StartGame);
+
+        let result = terminal.draw(|frame| {
+            draw(&mut app, frame).expect("drawing should succeed in test");
+        });
+
+        assert!(result.is_ok(), "drawing main menu should succeed");
+    }
+
+    #[test]
+    fn test_draw_options_menu() {
+        let mut app = create_test_app();
+        let mut terminal = create_test_terminal();
+        app.screen = Screen::OptionsMenu(OptionsMenuItem::Map);
+
+        let result = terminal.draw(|frame| {
+            draw(&mut app, frame).expect("drawing should succeed in test");
+        });
+
+        assert!(result.is_ok(), "drawing options menu should succeed");
+    }
+
+    #[test]
+    fn test_draw_map_menu() {
+        let mut app = create_test_app();
+        let mut terminal = create_test_terminal();
+        app.screen = Screen::MapMenu;
+        app.maps = vec![create_test_map()];
+        app.viewport_map = app.maps.first().cloned();
+
+        let result = terminal.draw(|frame| {
+            draw(&mut app, frame).expect("drawing should succeed in test");
+        });
+
+        assert!(result.is_ok(), "drawing map menu should succeed");
+    }
+
+    #[test]
+    fn test_draw_in_game() {
+        let mut app = create_test_app();
+        let mut terminal = create_test_terminal();
+        app.screen = Screen::InGame;
+        app.map = create_test_map();
+
+        let result = terminal.draw(|frame| {
+            draw(&mut app, frame).expect("drawing should succeed in test");
+        });
+
+        assert!(result.is_ok(), "drawing in-game screen should succeed");
+    }
+
+    #[test]
+    fn test_clear_function() {
+        let mut terminal = create_test_terminal();
+
+        let result = terminal.draw(|frame| {
+            clear(frame);
+        });
+
+        assert!(result.is_ok(), "clearing screen should succeed");
+    }
+
+    #[test]
+    fn test_init_menu_main_menu() {
+        let mut terminal = create_test_terminal();
+
+        let result = terminal.draw(|frame| {
+            let layout = init_menu(frame, MenuType::MainMenu(3));
+            assert_eq!(layout.len(), 3, "main menu should have 3 items");
+        });
+
+        assert!(result.is_ok(), "initializing main menu should succeed");
+    }
+
+    #[test]
+    fn test_init_menu_options_menu() {
+        let mut terminal = create_test_terminal();
+
+        let result = terminal.draw(|frame| {
+            let layout = init_menu(frame, MenuType::OptionsMenu(2));
+            assert_eq!(layout.len(), 2, "options menu should have 2 items");
+        });
+
+        assert!(result.is_ok(), "initializing options menu should succeed");
+    }
+
+    #[test]
+    fn test_main_menu_start_game_selected() {
+        let mut terminal = create_test_terminal();
+
+        let result = terminal.draw(|frame| {
+            main_menu(frame, MainMenuItem::StartGame);
+        });
+
+        assert!(
+            result.is_ok(),
+            "rendering main menu with start game selected should succeed"
+        );
+    }
+
+    #[test]
+    fn test_main_menu_options_selected() {
+        let mut terminal = create_test_terminal();
+
+        let result = terminal.draw(|frame| {
+            main_menu(frame, MainMenuItem::Options);
+        });
+
+        assert!(
+            result.is_ok(),
+            "rendering main menu with options selected should succeed"
+        );
+    }
+
+    #[test]
+    fn test_main_menu_quit_selected() {
+        let mut terminal = create_test_terminal();
+
+        let result = terminal.draw(|frame| {
+            main_menu(frame, MainMenuItem::Quit);
+        });
+
+        assert!(
+            result.is_ok(),
+            "rendering main menu with quit selected should succeed"
+        );
+    }
+
+    #[test]
+    fn test_options_menu_map_selected() {
+        let mut terminal = create_test_terminal();
+
+        let result = terminal.draw(|frame| {
+            options_menu(frame, OptionsMenuItem::Map);
+        });
+
+        assert!(
+            result.is_ok(),
+            "rendering options menu with map selected should succeed"
+        );
+    }
+
+    #[test]
+    fn test_options_menu_back_selected() {
+        let mut terminal = create_test_terminal();
+
+        let result = terminal.draw(|frame| {
+            options_menu(frame, OptionsMenuItem::Back);
+        });
+
+        assert!(
+            result.is_ok(),
+            "rendering options menu with back selected should succeed"
+        );
+    }
+
+    #[test]
+    fn test_map_menu_with_maps() {
+        let mut app = create_test_app();
+        let mut terminal = create_test_terminal();
+
+        app.maps = vec![
+            create_test_map(),
+            Map {
+                key: "second_map".to_owned(),
+                data: vec!["222".to_owned(), "213".to_owned(), "222".to_owned()],
+            },
+        ];
+        app.viewport_map = app.maps.first().cloned();
+
+        let result = terminal.draw(|frame| {
+            map_menu(&mut app, frame).expect("map menu should render successfully");
+        });
+
+        assert!(
+            result.is_ok(),
+            "rendering map menu with maps should succeed"
+        );
+    }
+
+    #[test]
+    fn test_map_menu_empty_viewport_map_error() {
+        let mut app = create_test_app();
+        let mut terminal = create_test_terminal();
+
+        app.maps = vec![create_test_map()];
+        app.viewport_map = None; // This should cause an error
+
+        let result = terminal.draw(|frame| {
+            let map_result = map_menu(&mut app, frame);
+            assert!(
+                map_result.is_err(),
+                "map menu should fail with empty viewport_map"
+            );
+        });
+
+        assert!(
+            result.is_ok(),
+            "terminal drawing should succeed even if map_menu fails"
+        );
+    }
+
+    #[test]
+    fn test_in_game_with_valid_map() {
+        let mut app = create_test_app();
+        let mut terminal = create_test_terminal();
+
+        app.map = create_test_map();
+        app.animation_manager = AnimationManager::new();
+
+        let result = terminal.draw(|frame| {
+            in_game(&mut app, frame).expect("in-game should render successfully");
+        });
+
+        assert!(
+            result.is_ok(),
+            "rendering in-game with valid map should succeed"
+        );
+    }
+
+    #[test]
+    fn test_in_game_no_entry_point_error() {
+        let mut app = create_test_app();
+        let mut terminal = create_test_terminal();
+
+        // Map without entry point (no '1' character)
+        app.map = Map {
+            key: "invalid_map".to_owned(),
+            data: vec![
+                "222222".to_owned(),
+                "200002".to_owned(),
+                "222222".to_owned(),
+            ],
+        };
+        app.animation_manager = AnimationManager::new();
+
+        let result = terminal.draw(|frame| {
+            let game_result = in_game(&mut app, frame);
+            assert!(
+                game_result.is_err(),
+                "in-game should fail without entry point"
+            );
+        });
+
+        assert!(
+            result.is_ok(),
+            "terminal drawing should succeed even if in_game fails"
+        );
+    }
+
+    #[test]
+    fn test_menu_type_repr() {
+        let main_menu = MenuType::MainMenu(3);
+        let options_menu = MenuType::OptionsMenu(2);
+
+        assert_eq!(main_menu.repr(), "Main Menu");
+        assert_eq!(options_menu.repr(), "Options Menu");
+    }
+
+    #[test]
+    fn test_menu_type_value() {
+        let main_menu = MenuType::MainMenu(3);
+        let options_menu = MenuType::OptionsMenu(2);
+
+        assert_eq!(main_menu.value(), 3);
+        assert_eq!(options_menu.value(), 2);
+    }
+}

@@ -227,3 +227,288 @@ pub(crate) fn transform_maze_to_screen_coords(
         })
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_animation_step_creation() {
+        let add_step = AnimationStep::Add(5, 10);
+        let remove_step = AnimationStep::Remove(3, 7);
+
+        match add_step {
+            AnimationStep::Add(x, y) => {
+                assert_eq!(x, 5);
+                assert_eq!(y, 10);
+            }
+            _ => panic!("Expected Add variant"),
+        }
+
+        match remove_step {
+            AnimationStep::Remove(x, y) => {
+                assert_eq!(x, 3);
+                assert_eq!(y, 7);
+            }
+            _ => panic!("Expected Remove variant"),
+        }
+    }
+
+    #[test]
+    fn test_animation_manager_new() {
+        let manager = AnimationManager::new();
+
+        assert!(manager.steps.is_empty());
+        assert_eq!(manager.current_index, 0);
+        assert!(manager.current_path.is_empty());
+    }
+
+    #[test]
+    fn test_animation_manager_default() {
+        let manager = AnimationManager::default();
+
+        assert!(manager.steps.is_empty());
+        assert_eq!(manager.current_index, 0);
+        assert!(manager.current_path.is_empty());
+    }
+
+    #[test]
+    fn test_animation_manager_reset() {
+        let mut manager = AnimationManager::new();
+
+        // Add some data
+        manager.steps.push(AnimationStep::Add(1, 2));
+        manager.current_index = 5;
+        manager.current_path.push((3, 4));
+
+        manager.reset();
+
+        // Steps should remain, but index and path should be reset
+        assert_eq!(manager.steps.len(), 1);
+        assert_eq!(manager.current_index, 0);
+        assert!(manager.current_path.is_empty());
+    }
+
+    #[test]
+    fn test_animation_manager_clear() {
+        let mut manager = AnimationManager::new();
+
+        // Add some data
+        manager.steps.push(AnimationStep::Add(1, 2));
+        manager.current_index = 5;
+        manager.current_path.push((3, 4));
+
+        manager.clear();
+
+        // Everything should be cleared
+        assert!(manager.steps.is_empty());
+        assert_eq!(manager.current_index, 0);
+        assert!(manager.current_path.is_empty());
+    }
+
+    #[test]
+    fn test_animation_manager_update_add_step() {
+        let mut manager = AnimationManager::new();
+        manager.steps.push(AnimationStep::Add(5, 10));
+
+        // Force timing to be ready for update
+        manager.last_update_time = Instant::now()
+            .checked_sub(Duration::from_millis(ANIMATION_FRAME_DELAY_MS + 10))
+            .expect("Duration subtraction should not underflow in test");
+
+        manager.update();
+
+        assert_eq!(manager.current_index, 1);
+        assert_eq!(manager.current_path.len(), 1);
+        assert_eq!(
+            manager
+                .current_path
+                .first()
+                .expect("Path should have at least one element"),
+            &(5, 10)
+        );
+    }
+
+    #[test]
+    fn test_animation_manager_update_remove_step() {
+        let mut manager = AnimationManager::new();
+        manager.current_path.push((5, 10));
+        manager.steps.push(AnimationStep::Remove(5, 10));
+
+        // Force timing to be ready for update
+        manager.last_update_time = Instant::now()
+            .checked_sub(Duration::from_millis(ANIMATION_FRAME_DELAY_MS + 10))
+            .expect("Duration subtraction should not underflow in test");
+
+        manager.update();
+
+        assert_eq!(manager.current_index, 1);
+        assert!(manager.current_path.is_empty());
+    }
+
+    #[test]
+    fn test_animation_manager_update_timing() {
+        let mut manager = AnimationManager::new();
+        manager.steps.push(AnimationStep::Add(1, 2));
+
+        // Update immediately after creation - shouldn't advance
+        manager.update();
+
+        assert_eq!(manager.current_index, 0);
+        assert!(manager.current_path.is_empty());
+    }
+
+    #[test]
+    fn test_animation_manager_update_loop_restart() {
+        let mut manager = AnimationManager::new();
+        manager.steps.push(AnimationStep::Add(1, 2));
+        manager.current_index = 1; // At end of steps
+        manager.current_path.push((1, 2));
+
+        // Force timing to be ready for update
+        manager.last_update_time = Instant::now()
+            .checked_sub(Duration::from_millis(ANIMATION_FRAME_DELAY_MS + 10))
+            .expect("Duration subtraction should not underflow in test");
+
+        manager.update();
+
+        // Should reset to beginning
+        assert_eq!(manager.current_index, 0);
+        assert!(manager.current_path.is_empty());
+    }
+
+    #[test]
+    fn test_record_animation_steps_with_exit() {
+        let map_data = vec!["11111".to_owned(), "13341".to_owned(), "11111".to_owned()];
+
+        let mut current_path = Vec::new();
+        let mut animation_steps = Vec::new();
+
+        record_animation_steps(&map_data, (1, 1), &mut current_path, &mut animation_steps);
+
+        // Should have recorded some steps
+        assert!(!animation_steps.is_empty());
+        // First step should be adding the start position
+        match animation_steps
+            .first()
+            .expect("Animation steps should not be empty")
+        {
+            AnimationStep::Add(x, y) => {
+                assert_eq!(*x, 1);
+                assert_eq!(*y, 1);
+            }
+            _ => panic!("Expected first step to be Add"),
+        }
+    }
+
+    #[test]
+    fn test_record_animation_steps_direct_exit() {
+        let map_data = vec!["111".to_owned(), "141".to_owned(), "111".to_owned()];
+
+        let mut current_path = Vec::new();
+        let mut animation_steps = Vec::new();
+
+        record_animation_steps(&map_data, (1, 1), &mut current_path, &mut animation_steps);
+
+        // Should add position then immediately remove it upon finding exit
+        assert_eq!(animation_steps.len(), 2);
+        match animation_steps
+            .first()
+            .expect("First animation step should exist")
+        {
+            AnimationStep::Add(1, 1) => {}
+            _ => panic!("Expected Add step"),
+        }
+        match animation_steps
+            .get(1)
+            .expect("Second animation step should exist")
+        {
+            AnimationStep::Remove(1, 1) => {}
+            _ => panic!("Expected Remove step"),
+        }
+    }
+
+    #[test]
+    fn test_transform_maze_to_screen_coords_basic() {
+        let map_data = vec!["111".to_owned(), "131".to_owned(), "111".to_owned()];
+
+        let maze_coords = vec![(1, 1)];
+        let result = transform_maze_to_screen_coords(&maze_coords, &map_data)
+            .expect("Transform should work with valid data");
+
+        assert_eq!(result.len(), 1);
+        let (screen_x, screen_y) = result
+            .first()
+            .expect("Result should have at least one element")
+            .to_owned();
+
+        // For 3x3 grid, center (1,1) should map to (0.0, 0.0)
+        assert!((screen_x - 0.0).abs() < f64::EPSILON);
+        assert!((screen_y - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_transform_maze_to_screen_coords_multiple_points() {
+        let map_data = vec![
+            "11111".to_owned(),
+            "13331".to_owned(),
+            "13331".to_owned(),
+            "13331".to_owned(),
+            "11111".to_owned(),
+        ];
+
+        let maze_coords = vec![(0, 0), (2, 2), (4, 4)];
+        let result = transform_maze_to_screen_coords(&maze_coords, &map_data)
+            .expect("Transform should work with valid data");
+
+        assert_eq!(result.len(), 3);
+
+        // For 5x5 grid:
+        // (0,0) -> x = 0 - 2 = -2.0, y = 2 - 0 = 2.0
+        let (x0, y0) = result
+            .first()
+            .expect("Result should have first element")
+            .to_owned();
+        assert!((x0 - (-2.0)).abs() < f64::EPSILON);
+        assert!((y0 - 2.0).abs() < f64::EPSILON);
+        // (2,2) -> x = 2 - 2 = 0.0, y = 2 - 2 = 0.0
+        let (x1, y1) = result
+            .get(1)
+            .expect("Result should have second element")
+            .to_owned();
+        assert!((x1 - 0.0).abs() < f64::EPSILON);
+        assert!((y1 - 0.0).abs() < f64::EPSILON);
+        // (4,4) -> x = 4 - 2 = 2.0, y = 2 - 4 = -2.0
+        let (x2, y2) = result
+            .get(2)
+            .expect("Result should have third element")
+            .to_owned();
+        assert!((x2 - 2.0).abs() < f64::EPSILON);
+        assert!((y2 - (-2.0)).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_transform_maze_to_screen_coords_empty_input() {
+        let map_data = vec!["111".to_owned(), "131".to_owned(), "111".to_owned()];
+
+        let maze_coords = vec![];
+        let result = transform_maze_to_screen_coords(&maze_coords, &map_data)
+            .expect("Transform should work with empty input");
+
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_transform_maze_to_screen_coords_error_empty_map() {
+        let map_data: Vec<String> = vec![];
+        let maze_coords = vec![(0, 0)];
+
+        let result = transform_maze_to_screen_coords(&maze_coords, &map_data);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_animation_frame_delay_constant() {
+        assert_eq!(ANIMATION_FRAME_DELAY_MS, 200);
+    }
+}

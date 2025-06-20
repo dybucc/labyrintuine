@@ -11,7 +11,7 @@ use color_eyre::eyre::{OptionExt as _, Result};
 ///
 /// This structure represents the custom type employed for indexing into files and retrieving the
 /// contents of labyrinth maps. It is used within a vector to get a kind of ordered hashmap.
-#[derive(Clone, PartialEq, Eq, PartialOrd)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd)]
 pub(crate) struct Map {
     /// Display name of the map.
     ///
@@ -93,3 +93,88 @@ static DEFAULT_MAP: LazyLock<&str> = LazyLock::new(|| {
 2333333333333332232222232233334
 2222222222222222222222222222222"
 });
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_map_default() {
+        let map = Map::default();
+
+        assert_eq!(map.key, "Default");
+        assert_eq!(map.data.len(), 21);
+        assert!(map
+            .data
+            .first()
+            .expect("Map should have at least one row")
+            .starts_with("222"));
+        assert!(map
+            .data
+            .get(19)
+            .expect("Map should have at least 20 rows")
+            .ends_with('4'));
+    }
+
+    #[test]
+    fn test_map_new_valid_input() {
+        let filename = OsString::from("test.labmap");
+        let data = "111\n222\n333";
+
+        let map = Map::new(filename, data).expect("Failed to create map");
+
+        assert_eq!(map.key, "test");
+        assert_eq!(map.data, vec!["111", "222", "333"]);
+    }
+
+    #[test]
+    fn test_map_new_single_line() {
+        let filename = OsString::from("single.labmap");
+        let data = "123456789";
+
+        let map = Map::new(filename, data).expect("Failed to create map");
+
+        assert_eq!(map.key, "single");
+        assert_eq!(map.data, vec!["123456789"]);
+    }
+
+    #[test]
+    fn test_map_new_empty_data() {
+        let filename = OsString::from("empty.labmap");
+        let data = "";
+
+        let map = Map::new(filename, data).expect("Failed to create map");
+
+        assert_eq!(map.key, "empty");
+        assert_eq!(map.data.len(), 0);
+    }
+
+    #[test]
+    fn test_map_new_missing_extension() {
+        let filename = OsString::from("noextension");
+        let data = "test";
+
+        let result = Map::new(filename, data);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_map_new_wrong_extension() {
+        let filename = OsString::from("test.txt");
+        let data = "test";
+
+        let result = Map::new(filename, data);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_map_new_multiple_extensions() {
+        let filename = OsString::from("test.backup.labmap");
+        let data = "line1\nline2";
+
+        let map = Map::new(filename, data).expect("Failed to create map");
+
+        assert_eq!(map.key, "test.backup");
+        assert_eq!(map.data, vec!["line1", "line2"]);
+    }
+}

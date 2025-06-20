@@ -105,3 +105,84 @@ impl App {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_app_new_initialization() {
+        let app = App::new();
+
+        assert!(!app.exit);
+        assert_eq!(app.screen, Screen::MainMenu(MainMenuItem::StartGame));
+        assert_eq!(app.map, Map::default());
+        assert!(app.maps.is_empty());
+        assert!(app.viewport_map.is_none());
+        assert_eq!(app.viewport_offset, 0);
+        assert_eq!(app.viewport_height, 0);
+    }
+
+    #[test]
+    fn test_app_default_implementation() {
+        let app = App::default();
+
+        assert!(!app.exit);
+        assert_eq!(app.screen, Screen::MainMenu(MainMenuItem::StartGame));
+        assert_eq!(app.map, Map::default());
+        assert!(app.maps.is_empty());
+        assert!(app.viewport_map.is_none());
+        assert_eq!(app.viewport_offset, 0);
+        assert_eq!(app.viewport_height, 0);
+    }
+
+    #[test]
+    fn test_app_new_equals_default() {
+        let app_new = App::new();
+        let app_default = App::default();
+
+        assert_eq!(app_new.exit, app_default.exit);
+        assert_eq!(app_new.screen, app_default.screen);
+        assert_eq!(app_new.map, app_default.map);
+        assert_eq!(app_new.maps.len(), app_default.maps.len());
+        assert_eq!(app_new.viewport_map, app_default.viewport_map);
+        assert_eq!(app_new.viewport_offset, app_default.viewport_offset);
+        assert_eq!(app_new.viewport_height, app_default.viewport_height);
+    }
+
+    #[test]
+    fn test_app_exit_flag_modification() {
+        let mut app = App::new();
+        assert!(!app.exit);
+
+        app.exit = true;
+        assert!(app.exit);
+    }
+
+    #[test]
+    fn test_app_screen_modification() {
+        let mut app = App::new();
+        assert_eq!(app.screen, Screen::MainMenu(MainMenuItem::StartGame));
+
+        app.screen = Screen::InGame;
+        assert_eq!(app.screen, Screen::InGame);
+    }
+
+    #[test]
+    fn test_app_viewport_offset_modification() {
+        let mut app = App::new();
+        assert_eq!(app.viewport_offset, 0);
+
+        app.viewport_offset = 5;
+        assert_eq!(app.viewport_offset, 5);
+    }
+
+    #[test]
+    fn test_app_viewport_height_modification() {
+        let mut app = App::new();
+        assert_eq!(app.viewport_height, 0);
+
+        app.viewport_height = 10;
+        assert_eq!(app.viewport_height, 10);
+    }
+}
