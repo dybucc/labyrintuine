@@ -1,10 +1,12 @@
 //! Core application state and logic for the labyrinth game.
 
-use color_eyre::eyre::Result;
+use std::{fs, path::PathBuf};
+
+use color_eyre::eyre::{OptionExt as _, Result};
 use ratatui::DefaultTerminal;
 
 use crate::{
-    events,
+    events, file_loader,
     map::Map,
     pathfinding::AnimationManager,
     types::{MainMenuItem, Screen},
@@ -83,6 +85,41 @@ impl App {
             viewport_height: 0,
             animation_manager: AnimationManager::new(),
         }
+    }
+
+    /// Creates a new instance of the App with an optionally specified map file.
+    ///
+    /// If a map file is provided, it will be loaded and the game will start directly in the
+    /// in-game screen. If no map file is provided or if loading fails, it falls back to the
+    /// default behavior.
+    ///
+    /// # Errors
+    ///
+    /// This function may return errors from file operations or map validation.
+    pub fn new_with_map(map_file: Option<PathBuf>) -> Result<Self> {
+        let mut app = Self::new();
+
+        if let Some(path) = map_file {
+            // Load the specified map file
+            let contents = fs::read_to_string(&path)?;
+            
+            // Validate the map format
+            if file_loader::parse_file_contents(contents.trim()) {
+                let filename = path
+                    .file_name()
+                    .ok_or_eyre("failed to extract filename from path")?
+                    .to_owned();
+                let map = Map::new(filename, &contents)?;
+                
+                // Set the loaded map as the current map and start the game
+                app.map = map;
+                app.screen = Screen::InGame;
+            } else {
+                return Err(color_eyre::eyre::eyre!("Invalid maze file format"));
+            }
+        }
+
+        Ok(app)
     }
 
     /// Runs the main loop of the application.
@@ -184,5 +221,53 @@ mod tests {
 
         app.viewport_height = 10;
         assert_eq!(app.viewport_height, 10);
+    }
+
+    #[test]
+    fn test_app_new_with_map_none() {
+        let app = App::new_with_map(None).expect("Should create app with no map");
+        
+        assert!(!app.exit);
+        assert_eq!(app.screen, Screen::MainMenu(MainMenuItem::StartGame));
+        assert_eq!(app.map, Map::default());
+    }
+
+    #[test]
+    fn test_app_new_with_map_nonexistent_file() {
+        let result = App::new_with_map(Some(std::path::PathBuf::from("nonexistent.labmap")));
+        
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_app_new_with_map_valid_file() {
+        // Create a temporary valid maze file
+        let temp_file = "/tmp/test_maze_valid.labmap";
+        std::fs::write(temp_file, "2222\n2134\n2222").expect("Failed to write test file");
+        
+        let app = App::new_with_map(Some(std::path::PathBuf::from(temp_file)))
+            .expect("Should create app with valid map");
+        
+        assert!(!app.exit);
+        assert_eq!(app.screen, Screen::InGame);
+        assert_eq!(app.map.key, "test_maze_valid");
+        assert_eq!(app.map.data.len(), 3);
+        
+        // Clean up
+        let _ = std::fs::remove_file(temp_file);
+    }
+
+    #[test]
+    fn test_app_new_with_map_invalid_format() {
+        // Create a temporary invalid maze file
+        let temp_file = "/tmp/test_maze_invalid.labmap";
+        std::fs::write(temp_file, "invalid\nmaze\nformat").expect("Failed to write test file");
+        
+        let result = App::new_with_map(Some(std::path::PathBuf::from(temp_file)));
+        
+        assert!(result.is_err());
+        
+        // Clean up
+        let _ = std::fs::remove_file(temp_file);
     }
 }

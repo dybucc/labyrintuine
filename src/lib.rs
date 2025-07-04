@@ -4,6 +4,8 @@
 //! game features a modular architecture with separate concerns for UI rendering, event handling,
 //! file operations, and core application logic.
 
+use clap as _; // Used by main.rs
+
 mod app;
 mod events;
 mod file_loader;
